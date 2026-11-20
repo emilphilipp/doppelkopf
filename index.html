@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doppelkopf</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♣</text></svg>">
+<script>try{var k=new URLSearchParams(location.search).get("skin")||JSON.parse(localStorage.getItem("doko.skin"));document.documentElement.dataset.skin=["klar","stube","stamm"].indexOf(k)>=0?k:"klar"}catch(e){document.documentElement.dataset.skin="klar"}</script>
+<style>
+/* Three designs, switchable in the header. Shared structure; html[data-skin] changes colours AND layout details:
+   klar  – flat, minimal, no table (inspired by Spades by Blackout Lab / Apple-style apps)
+   stube – cozy illustrated: paper, round faces, speech bubbles, pastel suit-tinted cards, bottom tray (inspired by DOKO!)
+   stamm – Stammtisch: oval felt on a wooden table, portrait medallions, fanned hand, classic cards (inspired by Doppelkopf-Palast / Pikaro) */
+:root{--cardw:62px;--cardh:90px;--fan:0deg;--tilt:1;--font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--card-font:var(--font)}
+html[data-skin=klar]{
+  --bg:#f5f5f2; --text:#111; --mute:#77777c; --panel:#fff; --panel2:#f0f0ec; --line:#e2e2dd;
+  --accent:#111; --accent-ink:#fff; --btn:#fff; --btn-line:#e2e2dd; --turn:#ff5a36;
+  --card:#fff; --card-line:#e6e6e1; --card-ink:#111; --card-red:#ff3b30; --card-trump:#fff;
+  --card-shadow:0 1px 2px rgba(0,0,0,.06),0 6px 16px rgba(0,0,0,.07);
+  --re:#111; --re-ink:#fff; --ko:#ff5a36; --ko-ink:#fff; --ann:#ffd23f; --ann-ink:#111; --badge:#ebebe6; --badge-ink:#444;
+  --good:#16a34a; --bad:#ff3b30; --veil:rgba(245,245,242,.7); --tilt:.4;
+}
+@media (prefers-color-scheme:dark){html[data-skin=klar]{
+  --bg:#101012; --text:#f4f4f5; --mute:#8d8d95; --panel:#1a1a1d; --panel2:#232327; --line:#2c2c31; --accent:#f4f4f5; --accent-ink:#111;
+  --btn:#1a1a1d; --btn-line:#2c2c31; --badge:#26262a; --badge-ink:#c9c9cf; --re:#f4f4f5; --re-ink:#111; --veil:rgba(16,16,18,.75);
+  --card-shadow:0 6px 18px rgba(0,0,0,.6); --card-line:#ddd;}}
+html[data-skin=stube]{
+  --bg:#f6ecd9; --text:#3b2440; --mute:#8b7488; --panel:#fffaf0; --panel2:#f6ecd9; --line:#e6d6bb;
+  --accent:#ef8a2c; --accent-ink:#fff; --btn:#fffaf0; --btn-line:#e3cfae; --turn:#ef8a2c;
+  --card:#fff7ec; --card-line:#3b2440; --card-ink:#3b2440; --card-red:#d1495b; --card-trump:#fff7ec;
+  --card-shadow:0 3px 0 #3b2440;
+  --re:#ef8a2c; --re-ink:#fff; --ko:#6a4c93; --ko-ink:#fff; --ann:#fff; --ann-ink:#3b2440; --badge:#fff; --badge-ink:#3b2440;
+  --good:#3a9d5d; --bad:#d1495b; --veil:rgba(59,36,64,.45); --tilt:2.2; --fan:1.6deg;
+  --font:ui-rounded,"SF Pro Rounded","Nunito","Segoe UI Rounded",system-ui,sans-serif;
+}
+html[data-skin=stamm]{
+  --bg:#2b1a10; --text:#f5ead6; --mute:#c7b394; --panel:#33211a; --panel2:#422b20; --line:#5a3d2b;
+  --accent:#d9a441; --accent-ink:#2a1a07; --btn:#3b2619; --btn-line:#6a4a32; --turn:#ffd166;
+  --card:#fffdf7; --card-line:#d8cfbd; --card-ink:#1b1b1b; --card-red:#c0182a; --card-trump:#fffdf7;
+  --card-shadow:0 2px 3px rgba(0,0,0,.35),0 10px 20px rgba(0,0,0,.35);
+  --re:#d9a441; --re-ink:#2a1a07; --ko:#c0392b; --ko-ink:#fff; --ann:#fffdf7; --ann-ink:#2a1a07; --badge:rgba(0,0,0,.4); --badge-ink:#f5ead6;
+  --good:#9be29b; --bad:#ff8a7a; --veil:rgba(20,10,4,.65); --tilt:2.6; --fan:1.8deg;
+  --card-font:Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 var(--font);overscroll-behavior:none}
+html[data-skin=stube] body{background:radial-gradient(circle at 1px 1px,rgba(59,36,64,.09) 1.2px,transparent 1.5px) 0 0/14px 14px,var(--bg)}
+html[data-skin=stamm] body{background:repeating-linear-gradient(92deg,rgba(255,255,255,.025) 0 3px,transparent 3px 11px),repeating-linear-gradient(88deg,rgba(0,0,0,.12) 0 1px,transparent 1px 23px),linear-gradient(#3a2416,#22140b)}
+button{font:inherit;color:inherit;cursor:pointer}
+.app{max-width:780px;margin:0 auto;overflow-x:hidden;padding:10px 12px 12px;min-height:100dvh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+h1{font-size:20px;margin:0 auto 0 0;letter-spacing:-.4px;font-weight:800}
+h1 b{color:var(--accent)}
+html[data-skin=klar] h1 b{color:var(--turn)}
+html[data-skin=stamm] h1{font-family:var(--card-font);font-weight:600;letter-spacing:.5px}
+.btn{background:var(--btn);border:1px solid var(--btn-line);border-radius:999px;padding:7px 14px}
+.btn:hover{filter:brightness(1.05)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
+.btn.small{padding:4px 11px;font-size:13px}
+.btn:disabled{opacity:.4;cursor:default}
+html[data-skin=stube] .btn{border:2px solid var(--text);box-shadow:0 2px 0 var(--text);font-weight:650}
+.prefs{display:flex;align-items:center;gap:6px}
+.skins{display:flex;gap:3px;background:var(--btn);border:1px solid var(--btn-line);border-radius:999px;padding:3px}
+.skins button{width:22px;height:22px;border-radius:50%;border:2px solid transparent;padding:0}
+.skins button[aria-pressed=true]{border-color:var(--text)}
+.skins [data-s=klar]{background:linear-gradient(135deg,#fff 50%,#ff5a36 50%)}
+.skins [data-s=stube]{background:linear-gradient(135deg,#f6ecd9 50%,#6a4c93 50%)}
+.skins [data-s=stamm]{background:linear-gradient(135deg,#7a4a2a 50%,#1f6a4a 50%)}
+select.mini{border-radius:999px;padding:4px 8px;font-size:13px}
+
+/* ---- table ---- */
+.table{position:relative;flex:1;min-height:360px;display:grid;
+  grid-template:"tl top tr" auto "left mid right" 1fr/minmax(84px,1fr) 2.2fr minmax(84px,1fr);padding:10px;gap:4px}
+html[data-skin=stube] .table{background:#cfdcc3;border:2px solid var(--text);border-radius:26px;box-shadow:inset 0 0 0 8px #bccdae,0 4px 0 var(--text)}
+html[data-skin=stamm] .table{border-radius:50%/42%;background:radial-gradient(ellipse at 50% 42%,#2a8a5c,#1b6844 60%,#134d32);
+  box-shadow:0 0 0 10px #6b3f22,0 0 0 13px #3e2412,0 0 0 15px #8b5a33,0 18px 40px rgba(0,0,0,.6),inset 0 0 60px rgba(0,0,0,.45);margin:14px 6px 20px;padding:18px 14px}
+
+/* seats */
+.seat{min-width:0;align-self:center;display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;font-size:13px}
+#s-top{grid-area:top;justify-self:center;max-width:100%}
+#s-left{grid-area:left} #s-right{grid-area:right}
+#mid{grid-area:mid;min-width:0}
+.av{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:20px;font-weight:750;flex:none;transition:box-shadow .2s}
+.seat .nm{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.seat .sub{color:var(--mute);font-size:11.5px;display:flex;gap:5px;flex-wrap:wrap;justify-content:center}
+.backs{display:flex;height:16px;overflow:hidden;max-width:100%;justify-content:center;margin-top:2px}
+.backs i{width:10px;height:15px;border-radius:2px;margin-right:-4px}
+.badge{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:0 7px;line-height:18px;background:var(--badge);color:var(--badge-ink)}
+.badge.re{background:var(--re);color:var(--re-ink)}.badge.ko{background:var(--ko);color:var(--ko-ink)}.badge.ann{background:var(--ann);color:var(--ann-ink)}
+.badge.dealer{background:transparent;box-shadow:inset 0 0 0 1px var(--mute);color:var(--mute)}
+
+/* klar: no avatar circles, big names, a coloured underline marks the player to move */
+html[data-skin=klar] .av{width:34px;height:34px;font-size:15px;background:var(--badge);color:var(--text)}
+html[data-skin=klar] .av.bot{background:transparent;font-size:24px}
+html[data-skin=klar] .seat .nm{font-size:15px}
+html[data-skin=klar] .seat.turn .nm,html[data-skin=klar] #me-av.turn+.nm{box-shadow:0 3px 0 var(--turn)}
+html[data-skin=klar] .backs{display:none}
+/* stube: big pastel faces with a thick outline, badges as speech bubbles */
+html[data-skin=stube] .av{width:54px;height:54px;font-size:28px;background:#ffe3c2;border:3px solid var(--text);color:var(--text)}
+html[data-skin=stube] #s-left .av{background:#d9ccef} html[data-skin=stube] #s-right .av{background:#c8e6d0}
+html[data-skin=stube] .seat.turn .av,html[data-skin=stube] #me-av.turn{box-shadow:0 0 0 5px var(--turn)}
+html[data-skin=stube] .badge{border:2px solid var(--text);line-height:15px;position:relative}
+html[data-skin=stube] .backs i{background:#6a4c93;border:1.5px solid var(--text)}
+/* stamm: framed portrait medallions with a gold ring for the player to move */
+html[data-skin=stamm] .av{width:52px;height:52px;font-size:26px;background:radial-gradient(circle at 35% 30%,#f3e2c2,#c9a777);color:#3a2414;
+  box-shadow:0 0 0 3px #d9a441,0 4px 10px rgba(0,0,0,.5)}
+html[data-skin=stamm] .seat .nm{background:rgba(0,0,0,.45);padding:1px 10px;border-radius:6px;font-size:12.5px;margin-top:3px}
+html[data-skin=stamm] .seat .sub{color:#e3d6bd}
+html[data-skin=stamm] .seat.turn .av,html[data-skin=stamm] #me-av.turn{box-shadow:0 0 0 3px var(--turn),0 0 22px 4px rgba(255,209,102,.55)}
+html[data-skin=stamm] .backs i{background:repeating-linear-gradient(45deg,#b0182b 0 2px,#e9e1d0 2px 3px);border:1px solid #fff}
+
+/* trick */
+#mid{position:relative;min-height:200px}
+#mid.ackable{cursor:pointer}
+.trickcard{position:absolute;left:50%;top:50%;transform:translate(var(--tx),var(--ty)) rotate(calc(var(--rot) * var(--tilt)));transition:transform .25s ease-out}
+.trickcard.win{z-index:5}
+.trickcard.win .card{box-shadow:0 0 0 3px var(--turn),var(--card-shadow)}
+#gameinfo{position:absolute;left:0;right:0;top:0;text-align:center;font-size:12px;color:var(--mute)}
+html[data-skin=stamm] #gameinfo{color:rgba(245,234,214,.7)}
+#lasttrick{position:absolute;right:0;bottom:0}
+
+/* ---- cards ---- */
+.card{width:var(--cardw);height:var(--cardh);border-radius:calc(var(--cardw) * .12);background:var(--card);color:var(--card-ink);position:relative;
+  box-shadow:var(--card-shadow);border:1px solid var(--card-line);user-select:none;flex:none;font-family:var(--card-font);overflow:hidden}
+.card.red{color:var(--card-red)}
+.card .tl{position:absolute;left:5px;top:4px;font-weight:800;font-size:17px;line-height:1;text-align:center;letter-spacing:-.5px}
+.card .tl small{display:block;font-size:14px;margin-top:1px}
+.card .big{position:absolute;right:6px;bottom:4px;font-size:30px;line-height:1}
+.card .ctr{display:none}
+/* klar: huge index, nothing else */
+html[data-skin=klar] .card .tl{font-size:24px;font-weight:700;letter-spacing:-1px}
+html[data-skin=klar] .card .tl small{font-size:18px}
+html[data-skin=klar] .card .big{font-size:22px;opacity:.9}
+html[data-skin=klar] .card.trump::before{content:"";position:absolute;left:0;right:0;bottom:0;height:4px;background:var(--ann)}
+/* stube: pastel tint per suit, thick outline */
+html[data-skin=stube] .card{border-width:2px;border-radius:10px}
+html[data-skin=stube] .card.s0{background:#e9e2f5}html[data-skin=stube] .card.s1{background:#dfeae3}
+html[data-skin=stube] .card.s2{background:#ffe0dc}html[data-skin=stube] .card.s3{background:#ffeccc}
+html[data-skin=stube] .card .big{font-size:28px}
+html[data-skin=stube] .card.trump::after{content:"★";position:absolute;right:4px;top:2px;font-size:11px;color:#ef8a2c}
+html[data-skin=stube] .card.court .ctr{display:grid;place-items:center;position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);width:58%;aspect-ratio:1;border-radius:50%;background:rgba(255,255,255,.75);border:2px solid currentColor;font-weight:800;font-size:18px}
+html[data-skin=stube] .card.court .big{display:none}
+/* stamm: classic cards, inner frame, serif letters, court cards with a framed centre */
+html[data-skin=stamm] .card::before{content:"";position:absolute;inset:4px;border:1px solid rgba(0,0,0,.08);border-radius:5px}
+html[data-skin=stamm] .card .tl{font-weight:700}
+html[data-skin=stamm] .card .ctr{display:grid;place-items:center;position:absolute;inset:22% 16% 14% 30%;font-size:28px}
+html[data-skin=stamm] .card .big{display:none}
+html[data-skin=stamm] .card.court .ctr{border:1.5px solid currentColor;border-radius:4px;background:linear-gradient(160deg,rgba(217,164,65,.25),rgba(217,164,65,.05));font-weight:700;font-size:24px;font-style:italic}
+
+/* ---- my area ---- */
+.tray{margin-top:10px}
+html[data-skin=stube] .tray{background:#5a3a63;color:#fff7ec;border:2px solid var(--text);border-radius:24px 24px 18px 18px;padding:8px 8px 4px;box-shadow:0 4px 0 var(--text)}
+html[data-skin=stube] .tray #status small{color:#e6cfe9}
+.mebar{display:flex;align-items:center;gap:8px;margin:0 2px 2px;min-height:38px;flex-wrap:wrap}
+.mebar .nm{font-weight:700}
+.mebar .av{width:36px;height:36px;font-size:16px}
+html[data-skin=klar] .mebar .av{display:none}
+html[data-skin=stube] .mebar .av{width:40px;height:40px;background:#ffe3c2;color:var(--text);border:3px solid var(--text)}
+html[data-skin=stamm] .mebar .av{width:38px;height:38px;font-size:18px}
+#status{flex:1;min-width:150px;font-size:14px}
+#status small{color:var(--mute)}
+html[data-skin=klar] #status{font-size:16px}
+#actions{display:flex;gap:6px;flex-wrap:wrap}
+#actions .btn:not(.primary){background:var(--ann);border-color:var(--ann);color:var(--ann-ink);font-weight:700}
+html[data-skin=stube] #actions .btn{border-color:var(--text)}
+#hand{display:flex;justify-content:center;padding:16px 4px 8px;min-height:calc(var(--cardh) + 26px)}
+#hand .card{margin-left:var(--ov,-20px);transition:translate .12s,filter .12s;
+  rotate:calc((var(--i,0) - (var(--n,1) - 1) / 2) * var(--fan));transform-origin:50% 300%}
+#hand .card:first-child{margin-left:0}
+#hand .card.legal{cursor:pointer}
+#hand .card.legal:hover,#hand .card.legal:focus-visible{translate:0 -12px}
+#hand.myturn .card:not(.legal){filter:brightness(.72) saturate(.6)}
+#hand.myturn .card.legal{box-shadow:0 0 0 2px var(--turn),var(--card-shadow)}
+#hand.covered .card{visibility:hidden}
+html[data-skin=stamm] #hand{padding-top:22px}
+html[data-skin=stube] #hand,html[data-skin=stamm] #hand{padding-left:44px;padding-right:44px}
+html[data-skin=stube] #hand.myturn .card:not(.legal){filter:brightness(.88) saturate(.4)}
+
+/* ---- overlays ---- */
+.overlay{position:fixed;inset:0;background:var(--veil);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:20;padding:12px}
+.overlay.on{display:flex}
+.dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:20px;padding:18px;max-width:520px;width:100%;max-height:92dvh;overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)}
+html[data-skin=stube] .dialog{border:2px solid var(--text);box-shadow:0 5px 0 var(--text)}
+.dialog h2{margin:0 0 10px;font-size:19px}
+.dialog h3{margin:14px 0 6px;font-size:12px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.6px}
+.row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
+.row label{min-width:64px;color:var(--mute);font-size:13px}
+input[type=text],select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:inherit;min-width:0}
+input[type=text]{width:110px}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+.choices{display:flex;flex-wrap:wrap;gap:6px}
+table.res{width:100%;border-collapse:collapse;font-size:14px}
+table.res td{padding:4px;border-bottom:1px solid var(--line)}
+table.res td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.pos{color:var(--good)}.neg{color:var(--bad)}
+.hint{color:var(--mute);font-size:12.5px}
+.code{font:700 26px/1 ui-monospace,Menlo,monospace;letter-spacing:4px;color:var(--accent)}
+.lobby li{margin:2px 0}
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--panel);color:var(--text);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.2);padding:8px 14px;border-radius:999px;z-index:30;display:none}
+@media (max-width:520px){
+  :root{--cardw:50px;--cardh:74px}
+  .prefs{order:3;width:100%;justify-content:space-between}
+  .card .tl{font-size:14px;left:4px}.card .tl small{font-size:12px}.card .big{font-size:23px}
+  html[data-skin=klar] .card .tl{font-size:19px}html[data-skin=klar] .card .tl small{font-size:15px}
+  .table{grid-template-columns:minmax(64px,1fr) 2fr minmax(64px,1fr);padding:6px;min-height:300px}
+  html[data-skin=stamm] .table{margin:10px 4px 16px;padding:14px 6px}
+  .seat{font-size:12px}
+  .av{width:36px!important;height:36px!important;font-size:18px!important}
+  .backs i{width:7px;height:12px;margin-right:-3px}
+  #mid{min-height:170px}
+  html[data-skin=stube] #hand,html[data-skin=stamm] #hand{padding-left:30px;padding-right:30px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Doppel<b>kopf</b></h1>
+    <div class="prefs">
+      <div class="skins" role="group" aria-label="Design"><button data-s="klar" title="Design: Klar"></button><button data-s="stube" title="Design: Stube"></button><button data-s="stamm" title="Design: Stammtisch"></button></div>
+      <select class="mini" id="speed" title="Tempo der Bots"><option value="1">Schnell</option><option value="1.6">Normal</option><option value="2.5">Langsam</option></select>
+    </div>
+    <button class="btn small" id="b-scores">Spielliste</button>
+    <button class="btn small" id="b-rules">Regeln</button>
+    <button class="btn small" id="b-setup">Neu</button>
+  </header>
+  <div class="table">
+    <div class="seat" id="s-top"></div>
+    <div class="seat" id="s-left"></div>
+    <div id="mid"><div id="gameinfo"></div><div id="trick"></div><button class="btn small" id="lasttrick" hidden>Letzter Stich</button></div>
+    <div class="seat" id="s-right"></div>
+  </div>
+  <div class="tray">
+  <div class="mebar">
+    <span class="av" id="me-av"></span><span class="nm" id="me-name"></span><span id="me-badges"></span>
+    <div id="status"></div>
+    <div id="actions"></div>
+  </div>
+  <div id="hand"></div>
+  </div>
+</div>
+
+<div class="overlay" id="ov"><div class="dialog" id="dlg"></div></div>
+<div class="toast" id="toast"></div>
+
+<script src="engine.js?v=5"></script>
+<script src="bots.js?v=5"></script>
+<script src="app.js?v=5"></script>
+</body>
+</html>

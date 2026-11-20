@@ -1,0 +1,186 @@
+<meta charset="utf-8">
+<title>Doppelkopf Bot Ladder</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column — headline, win-rate bars vs. the common opponent, full head-to-head grid, then the compute bill */
+:root{
+  --bg:#f3f5f1; --surface:#ffffff; --ink:#18221c; --ink2:#4a5a50; --muted:#7b897f; --line:#dde3dc;
+  --accent:#1f7a52; --lose:#b5532f; --mid:#eceeea;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#111613; --surface:#1a1a19; --ink:#e8eee9; --ink2:#b3c0b7; --muted:#83918a; --line:#2c3530;
+  --accent:#2f9a68; --lose:#c8673f; --mid:#262a27; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#111613; --surface:#1a1a19; --ink:#e8eee9; --ink2:#b3c0b7; --muted:#83918a; --line:#2c3530;
+  --accent:#2f9a68; --lose:#c8673f; --mid:#262a27; color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body)}
+.wrap{max-width:860px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:28px 48px;display:grid;gap:22px}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font:800 clamp(28px,6vw,44px)/1.05 var(--display);margin:8px 0 10px;text-wrap:balance;letter-spacing:-.01em}
+.lede{color:var(--ink2);max-width:64ch;margin:0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;min-width:0}
+.panel h2{font:600 18px/1.3 var(--display);margin:0 0 4px;text-wrap:balance}
+.sub{color:var(--muted);font-size:13px;margin:0 0 12px}
+.scroll{overflow-x:auto}
+svg text{font-family:var(--body)}
+.tick{fill:var(--muted);font:12px var(--mono)}
+.grid{stroke:var(--line);stroke-width:1}
+.ref{stroke:var(--ink2);stroke-width:1.5;stroke-dasharray:5 4}
+.reftxt{fill:var(--ink2);font-size:12px}
+.name{fill:var(--ink);font-weight:600;font-size:14px}
+.kind{fill:var(--muted);font-size:12px}
+.val{fill:var(--ink);font:500 13px var(--mono)}
+.bar{fill:var(--accent)} .bar.lose{fill:var(--lose)}
+.err{stroke:var(--ink2);stroke-width:1.5}
+.row{outline:none} .row:hover .bar,.row:focus .bar{opacity:.8}
+.hit{fill:transparent}
+.tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-size:13px;padding:8px 10px;border-radius:8px;max-width:260px;line-height:1.4;z-index:5}
+table{border-collapse:separate;border-spacing:3px;font-size:13px}
+.hm th{font-weight:600;text-align:left;padding:4px 6px;color:var(--ink2);font-size:12.5px}
+.hm thead th{text-align:center;vertical-align:bottom}
+.hm td{width:86px;height:44px;text-align:center;border-radius:6px;font:500 14px var(--mono);font-variant-numeric:tabular-nums;color:var(--ink)}
+.hm td small{display:block;font:11px var(--body);color:var(--ink2)}
+.hm td.self{background:transparent;color:var(--muted)}
+.hm td.na{background:transparent;border:1px dashed var(--line);color:var(--muted);font:12px var(--body)}
+.note{font-size:13px;color:var(--ink2);max-width:72ch;margin:10px 0 0}
+.note b{color:var(--ink)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.tile{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.tile .k{font-size:12px;color:var(--muted)}
+.tile .v{font:600 24px/1.2 var(--display)}
+.tile .v small{font:500 13px var(--body);color:var(--ink2)}
+.runs{border-collapse:collapse;width:100%;font-size:13px}
+.runs th,.runs td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.runs td.n{font-family:var(--mono);text-align:right;white-space:nowrap}
+.est{font-size:11px;color:var(--muted);border:1px dashed var(--muted);border-radius:999px;padding:1px 6px;white-space:nowrap}
+.power{display:grid;gap:6px;margin:14px 0 4px}
+.prow{display:grid;grid-template-columns:120px 1fr 64px;align-items:center;gap:8px;font-size:13px}
+.ptrack{height:12px;background:var(--mid);border-radius:3px}
+.pfill{height:12px;background:var(--accent);border-radius:3px}
+.prow .n{font-family:var(--mono);text-align:right}
+@media (max-width:520px){.prow{grid-template-columns:96px 1fr 56px}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Doppelkopf RL · bots as of 19 Nov 2026</div>
+    <h1>How often does each bot win?</h1>
+    <p class="lede">Two bots of one type sit against two of another, and every deal is played twice with seats swapped, so card luck cancels out.
+      A bot wins a game when its party scores points. Partners are dealt by the Kreuz-Damen, so a bot often plays <i>with</i> the other type — that keeps every rate fairly close to 50 %.</p>
+  </header>
+
+  <section class="panel" aria-labelledby="h1c">
+    <h2 id="h1c">Win rate against the Simple-rules bot</h2>
+    <p class="sub">% of individual games won when playing two-against-two with Simple-rules bots · whiskers ≈ ±1 standard error</p>
+    <div class="scroll" id="chart" role="img" aria-label="Win rates against the Simple rules bot: Random 40.3 percent, UCT fast 52.6, UCT Sievers 54.8, UCT strong 55.0 percent."></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h2c">
+    <h2 id="h2c">Every pairing</h2>
+    <p class="sub">Read across: how often the <b>row</b> bot wins its games against the <b>column</b> bot</p>
+    <div class="scroll"><table class="hm" id="hm"></table></div>
+    <p class="note">Why the two directions don't add up to 100 %: in a solo three players lose together, and a few games end with no winner (both parties missed an Absage).
+      More search helps but flattens quickly: UCT Sievers beats UCT fast only 48.5 % to 43.6 %.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="h3c">
+    <h2 id="h3c">What the project has used so far</h2>
+    <p class="sub">Measured from the Mac's own power sensor (whole machine, incl. screen) · electricity at 0.37 €/kWh</p>
+    <div class="tiles">
+      <div class="tile"><div class="k">CPU time</div><div class="v">2.9 h</div></div>
+      <div class="tile"><div class="k">Peak RAM (one job)</div><div class="v">809 MB <small>of 32 GB</small></div></div>
+      <div class="tile"><div class="k">Energy</div><div class="v">19 Wh <small>15 Wh from the jobs</small></div></div>
+      <div class="tile"><div class="k">Electricity cost</div><div class="v">0.7 ct</div></div>
+    </div>
+    <div class="power" aria-label="Power draw">
+      <div class="prow"><span>Idle, kept awake</span><div class="ptrack"><div class="pfill" style="width:8.3%"></div></div><span class="n">3.6 W</span></div>
+      <div class="prow"><span>Search on 1 core</span><div class="ptrack"><div class="pfill" style="width:58.8%"></div></div><span class="n">25.4 W</span></div>
+      <div class="prow"><span>All cores busy</span><div class="ptrack"><div class="pfill" style="width:100%"></div></div><span class="n">43.2 W</span></div>
+    </div>
+    <p class="note">Idle around the clock costs about <b>3 ct a day</b>. A full hour of all-cores benchmarking costs about <b>1.6 ct</b>.</p>
+    <div class="scroll" style="margin-top:12px"><table class="runs">
+      <thead><tr><th>Run</th><th>Wall</th><th>CPU</th><th>RAM</th><th>Avg power</th><th>Energy</th></tr></thead>
+      <tbody>
+        <tr><td>Session 1: tests, tuning, UI checks <span class="est">estimated</span></td><td class="n">30 min</td><td class="n">25 min</td><td class="n">~300 MB</td><td class="n">–</td><td class="n">3.5 Wh</td></tr>
+        <tr><td>Session 1: first benchmarks <span class="est">estimated</span></td><td class="n">8 min</td><td class="n">38 min</td><td class="n">~300 MB</td><td class="n">–</td><td class="n">3.1 Wh</td></tr>
+        <tr><td>Win-rate matrix, 6 pairings</td><td class="n">8 min</td><td class="n">77 min</td><td class="n">378 MB</td><td class="n">43.2 W</td><td class="n">5.8 Wh</td></tr>
+        <tr><td>UCT strong vs Simple rules, 40 deals</td><td class="n">16 min</td><td class="n">31 min</td><td class="n">809 MB</td><td class="n">25.4 W</td><td class="n">6.6 Wh</td></tr>
+      </tbody></table></div>
+  </section>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+const bots = ['Random', 'Simple rules', 'UCT fast', 'UCT Sievers', 'UCT strong'];
+const kinds = ['random legal cards', 'hand-written heuristic', 'search 5 × 300', 'search 10 × 1000', 'search 30 × 3000'];
+// win % of row bot vs column bot, [value, standard error, deals]
+const W = {
+  'Random':       { 'Simple rules': [40.3, 0.6, 4000], 'UCT fast': [36.9, 1.7, 400], 'UCT Sievers': [33.8, 2.4, 200] },
+  'Simple rules': { 'Random': [59.3, 0.6, 4000], 'UCT fast': [43.2, 1.7, 400], 'UCT Sievers': [41.1, 2.4, 200], 'UCT strong': [43.8, 5.5, 40] },
+  'UCT fast':     { 'Random': [61.7, 1.7, 400], 'Simple rules': [52.6, 1.7, 400], 'UCT Sievers': [43.6, 2.4, 200] },
+  'UCT Sievers':  { 'Random': [64.8, 2.4, 200], 'Simple rules': [54.8, 2.4, 200], 'UCT fast': [48.5, 2.4, 200] },
+  'UCT strong':   { 'Simple rules': [55.0, 5.5, 40] },
+};
+const tip = document.getElementById('tip');
+function showTip(ev, html) {
+  tip.innerHTML = html; tip.hidden = false;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const px = ev.clientX || r.left + 40, py = ev.clientY || r.top;
+  tip.style.left = Math.min(px + 14, innerWidth - 280) + 'px'; tip.style.top = (py + 14) + 'px';
+}
+const hideTip = () => { tip.hidden = true; };
+
+// --- bars vs the common opponent
+const rows = ['Random', 'UCT fast', 'UCT Sievers', 'UCT strong'];
+const CW = 760, rowH = 50, padTop = 26, left = 172, right = 70, CH = padTop + rows.length * rowH + 28, x0 = 30, x1 = 60;
+const x = v => left + (v - x0) / (x1 - x0) * (CW - left - right);
+const ns = 'http://www.w3.org/2000/svg';
+const el = (t, a, p) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; };
+const svg = el('svg', { viewBox: `0 0 ${CW} ${CH}`, width: '100%', style: 'min-width:520px;display:block' });
+for (let t = x0; t <= x1; t += 5) {
+  el('line', { x1: x(t), x2: x(t), y1: padTop, y2: CH - 24, class: t === 50 ? 'ref' : 'grid' }, svg);
+  el('text', { x: x(t), y: CH - 6, 'text-anchor': 'middle', class: 'tick' }, svg).textContent = t + ' %';
+}
+el('text', { x: x(50), y: 14, 'text-anchor': 'middle', class: 'reftxt' }, svg).textContent = 'as good as Simple rules';
+rows.forEach((b, i) => {
+  const [v, se, n] = W[b]['Simple rules'], y = padTop + i * rowH, cy = y + rowH / 2;
+  const g = el('g', { class: 'row', tabindex: 0 }, svg);
+  el('text', { x: 0, y: cy - 3, class: 'name' }, g).textContent = b;
+  el('text', { x: 0, y: cy + 14, class: 'kind' }, g).textContent = kinds[bots.indexOf(b)];
+  const a = Math.min(x(v), x(50)), w = Math.abs(x(v) - x(50));
+  el('rect', { x: a, y: cy - 9, width: Math.max(w, 2), height: 18, rx: 4, class: 'bar' + (v < 50 ? ' lose' : '') }, g);
+  el('line', { x1: x(v - se), x2: x(v + se), y1: cy, y2: cy, class: 'err' }, g);
+  for (const e of [v - se, v + se]) el('line', { x1: x(e), x2: x(e), y1: cy - 5, y2: cy + 5, class: 'err' }, g);
+  const lx = v < 50 ? x(v - se) - 8 : x(v + se) + 8;
+  el('text', { x: lx, y: cy + 4, 'text-anchor': v < 50 ? 'end' : 'start', class: 'val' }, g).textContent = v.toFixed(1) + ' %';
+  el('rect', { x: 0, y, width: CW, height: rowH, class: 'hit' }, g);
+  const html = `<b>${b}</b> vs Simple rules<br>wins ${v.toFixed(1)} % of its games (± ${se})<br>${n} deals, each played twice`;
+  g.addEventListener('pointermove', ev => showTip(ev, html)); g.addEventListener('focus', ev => showTip(ev, html));
+  g.addEventListener('pointerleave', hideTip); g.addEventListener('blur', hideTip);
+});
+document.getElementById('chart').appendChild(svg);
+
+// --- heatmap: green above 50 %, orange below, gray at 50 %
+const hm = document.getElementById('hm');
+let h = '<thead><tr><th></th>' + bots.map(b => `<th scope="col">vs ${b}</th>`).join('') + '</tr></thead><tbody>';
+for (const r of bots) {
+  h += `<tr><th scope="row">${r}</th>`;
+  for (const c of bots) {
+    if (r === c) { h += '<td class="self">—</td>'; continue; }
+    const cell = W[r][c];
+    if (!cell) { h += '<td class="na">not run</td>'; continue; }
+    const [v, se, n] = cell, k = Math.min(1, Math.abs(v - 50) / 16), col = v >= 50 ? 'var(--accent)' : 'var(--lose)';
+    h += `<td tabindex="0" data-tip="<b>${r}</b> vs ${c}: ${v.toFixed(1)} % ± ${se}<br>${n} deals" style="background:color-mix(in oklab, ${col} ${Math.round(10 + k * 45)}%, var(--mid))">${v.toFixed(1)}<small>%</small></td>`;
+  }
+  h += '</tr>';
+}
+hm.innerHTML = h + '</tbody>';
+hm.querySelectorAll('td[data-tip]').forEach(td => {
+  td.addEventListener('pointermove', ev => showTip(ev, td.dataset.tip)); td.addEventListener('focus', ev => showTip(ev, td.dataset.tip));
+  td.addEventListener('pointerleave', hideTip); td.addEventListener('blur', hideTip);
+});
+</script>
