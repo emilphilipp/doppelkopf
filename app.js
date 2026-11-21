@@ -47,13 +47,27 @@ let client = { conn: null, seat: -1, v: null, meta: null };
 let peer = null, roomCode = '', remote = [null, null, null, null];
 
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
-let worker = null, botWaiting = null, botReq = 0;
-try { worker = new Worker('worker.js?v=6'); worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : botWaiting && botWaiting(e.data)); } catch (e) { worker = null; }
+let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
+try {
+  worker = new Worker('worker.js?v=8');
+  worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
+  worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
+} catch (e) { worker = null; }
+// the worker failed (script error, stale cached file, hang): bots continue on the main thread with the simple rules
+function workerBroken(why) {
+  if (!worker) return;
+  console.warn('bot worker failed:', why); worker = null; clearTimeout(botTimer);
+  toast('KI-Bot nicht verfügbar – die Bots spielen nach einfachen Regeln. Bitte Seite neu laden.');
+  if (botWaiting) { botWaiting = null; if (G) { G.thinking = false; update(); } }
+}
 function askBot(seat, cb) {
   const t = BOT_TYPES[G.cfg.seats[seat]], view = E.view(G.state, seat), legal = E.legalActions(G.state);
   const seed = (Math.random() * 2 ** 32) >>> 0, id = ++botReq;
-  if (worker) { botWaiting = d => { if (d.id === id) { botWaiting = null; cb(d.a); } };
-    worker.postMessage({ id, view, legal, bot: t.bot, opts: t.opts || {}, seed }); }
+  if (worker) {
+    botWaiting = d => { if (d.id === id) { botWaiting = null; clearTimeout(botTimer); cb(d.a); } };
+    clearTimeout(botTimer); botTimer = setTimeout(() => workerBroken('no answer after 60 s'), 60000);
+    worker.postMessage({ id, view, legal, bot: t.bot, opts: t.opts || {}, seed });
+  }
   else setTimeout(() => cb((DokoBots.BOTS[t.bot] || DokoBots.BOTS.heuristic).make(t.opts || {})(view, legal, E.rng(seed))), 0);   // no worker: no network
 }
 
