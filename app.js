@@ -29,6 +29,16 @@ const rulesOf = c => Object.assign({}, c.ruleset === 'ddv' ? E.DEFAULT_RULES : E
 // display prefs: design (skin) and bot speed (multiplier on the bots' minimum move time and the trick pause)
 let speed = Math.max(1, store.get('speed', 1.6));   // 1 = fastest offered
 let showQ = store.get('showQ', false);               // show the network's expected points next to my options
+
+// anonymous game log (to train and test the KI on games with people): deal, seats, moves, result — no names, no IP
+const LOG_URL = 'https://doko-log.doko-games.workers.dev/games';   // log-worker/ (Cloudflare); '' = logging off
+const logHere = window.DOKO_LOG_SEND || (LOG_URL && location.hostname === 'emilphilipp.github.io');
+let logGames = store.get('logGames', true);
+function sendLog(rec) {
+  const body = JSON.stringify(rec);
+  if (window.DOKO_LOG_SEND) return window.DOKO_LOG_SEND(body);
+  fetch(LOG_URL, { method: 'POST', body, headers: { 'Content-Type': 'text/plain' }, keepalive: true }).catch(() => { /* offline: the game is just not logged */ });
+}
 function setSkin(k) {
   document.documentElement.dataset.skin = k; store.set('skin', k);
   document.querySelectorAll('.skins button').forEach(b => b.setAttribute('aria-pressed', b.dataset.s === k));
@@ -50,7 +60,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=9');
+  worker = new Worker('worker.js?v=10');
   worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -65,7 +75,7 @@ function askBot(seat, cb) {
   const t = BOT_TYPES[G.cfg.seats[seat]], view = E.view(G.state, seat), legal = E.legalActions(G.state);
   const seed = (Math.random() * 2 ** 32) >>> 0, id = ++botReq;
   if (worker) {
-    botWaiting = d => { if (d.id === id) { botWaiting = null; clearTimeout(botTimer); cb(d.a); } };
+    botWaiting = d => { if (d.id === id) { botWaiting = null; clearTimeout(botTimer); cb(d.a, d.vals, d.model); } };
     clearTimeout(botTimer); botTimer = setTimeout(() => workerBroken('no answer after 60 s'), 60000);
     worker.postMessage({ id, view, legal, bot: t.bot, opts: t.opts || {}, seed });
   }
@@ -110,10 +120,12 @@ function nextGame() {
     if (owing.length && G.rules.listGames - G.listCount <= owing.length) forced = owing[0];
   }
   G.state = E.newGame({ dealer: G.dealer, rules: G.rules, duty, forced });
+  G.rec = { v: 1, site: 'v' + window.DOKO_VERSION, rules: G.cfg.ruleset === 'ddv' ? 'ddv' : 'house', listGames: G.rules.listGames, model: null,
+    dealer: G.dealer, hands: G.state.hands.map(h => h.slice()), duty, forced, seats: G.cfg.seats.slice(), actions: [] };
   G.recorded = false; G.pauseUntil = 0; G.waitAck = false;
   update();
 }
-function act(seat, a) {
+function act(seat, a, q, model) {   // q, model: the KI bot's values for its legal moves (logged)
   if (!G || G.state.phase === 'done' || seat !== G.state.turn || Date.now() < G.pauseUntil || G.waitAck) return;
   const legal = E.legalActions(G.state);
   if (!legal.includes(a)) {
@@ -122,6 +134,10 @@ function act(seat, a) {
     if (same === undefined || !G.state.hands[seat].includes(a)) return;
   }
   const nt = G.state.tricks.length;
+  const x = { s: seat, a };
+  if (q) { x.q = q.map(v => Math.round(v * 100) / 100); if (model) G.rec.model = model; }
+  if (G.cfg.seats[seat] === 'human' && showQ) x.h = 1;   // the person saw the KI-Tipps for this move
+  G.rec.actions.push(x);
   E.step(G.state, a);
   // a finished trick stays on the table: until a human confirms it (games with humans), else for a moment
   if (G.state.tricks.length > nt) { if (G.cfg.seats.some(t => t === 'human' || t === 'remote')) G.waitAck = true; else G.pauseUntil = Date.now() + 1300 * speed; }
@@ -137,6 +153,8 @@ function update() {
     else if (r.dutyGame) { G.duty[s.soloist] = false; G.sameDealer = true; }
     else G.listCount++;
     r.perSeat.forEach((x, q) => { G.scores[q] += x; });
+    if (logHere && logGames && mode !== 'client' && G.cfg.seats.some(t => t === 'human' || t === 'remote'))
+      sendLog(Object.assign(G.rec, { result: { perSeat: r.perSeat, gameType: s.gameType, soloist: s.soloist, redeal: !!r.redeal } }));
     if (!r.redeal) G.history.push({ gameNo: G.gameNo, gameType: s.gameType, soloist: s.soloist, bride: s.bride,
       re: [0, 1, 2, 3].filter(q => s.team[q] === 1), duty: !!r.dutyGame, winner: r.winner, value: r.value, perSeat: r.perSeat, rePts: r.re });
   }
@@ -155,9 +173,9 @@ function update() {
   if (isBot(t) && !G.thinking) {
     G.thinking = true;
     const t0 = Date.now(), g = G, st = s, n = s.log.length;
-    askBot(s.turn, a => {
+    askBot(s.turn, (a, q, model) => {
       const wait = Math.max(0, (st.phase === 'reserve' ? 350 : 550) * speed - (Date.now() - t0));
-      setTimeout(() => { if (G !== g) return; g.thinking = false; if (g.state === st && st.log.length === n) act(st.turn, a); else update(); }, wait);
+      setTimeout(() => { if (G !== g) return; g.thinking = false; if (g.state === st && st.log.length === n) act(st.turn, a, q, model); else update(); }, wait);
     });
   }
 }
@@ -368,7 +386,10 @@ $('b-rules').onclick = () => userOpen(cfg.ruleset === 'ddv' ? `<h2>DDV-Turnierre
   Doppelkopf, Fuchs gefangen, Karlchen, <b>Karlchen gefangen</b>, <b>Fuchs macht letzten Stich</b>. Solo zählt dreifach.</p>
   <h3>KI-Bot und KI-Tipps</h3><p>„Bot: KI“ ist ein selbst trainiertes neuronales Netz (627 Mio. Übungsspiele gegen sich selbst, nur Hausregeln).
   Mit <b>KI-Tipps</b> zeigt es bei jeder deiner Entscheidungen, wie viele Punkte es für dich erwartet; grün = was es selbst wählen würde.
-  Achtung: es spielt noch viel zu gern Solo.</p>`);
+  Achtung: es spielt noch viel zu gern Solo.</p>${logHere ? `
+  <h3>Datenschutz</h3><p>Fertige Spiele, an denen ein Mensch teilnimmt, werden <b>anonym</b> gespeichert, um die KI zu verbessern:
+  Kartenverteilung, Züge, Ergebnis und Spielversion. <b>Keine Namen, keine IP-Adressen, keine Geräte-Kennung.</b>
+  Online-Spiele speichert nur der Gastgeber. Abschalten: „Neu“ → Haken bei „Spiele anonym speichern“ entfernen.</p>` : ''}`);
 
 function setupHTML() {
   const seatRows = [0, 1, 2, 3].map(q => `<div class="row"><input type="text" id="n${q}" value="${esc(cfg.names[q])}" maxlength="12">
@@ -380,6 +401,8 @@ function setupHTML() {
     <div class="row"><select id="rset"><option value="house"${cfg.ruleset !== 'ddv' ? ' selected' : ''}>Unsere Hausregeln</option>
       <option value="ddv"${cfg.ruleset === 'ddv' ? ' selected' : ''}>DDV-Turnierregeln</option></select>
       <label>Liste</label><input type="text" id="rlist" value="${cfg.listGames || 24}" style="width:52px" inputmode="numeric"><span class="hint">Spiele (Pflichtsolo)</span></div>
+    ${logHere ? `<label class="hint" style="display:flex;gap:8px;align-items:flex-start;margin-top:8px"><input type="checkbox" id="logg"${logGames ? ' checked' : ''}>
+      <span>Spiele anonym speichern, um die KI zu verbessern (Karten, Züge, Ergebnis – keine Namen, keine IP)</span></label>` : ''}
     <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn primary" id="go">Spielen</button></div>
     <h3>Online</h3>
     <div id="online">${onlineHTML()}</div>
@@ -401,6 +424,7 @@ function readSetup() {
   cfg = { names: [0, 1, 2, 3].map(q => $('n' + q).value.trim() || 'Spieler ' + (q + 1)), seats: [0, 1, 2, 3].map(q => $('t' + q).value),
     ruleset: $('rset').value, listGames: Math.max(4, Math.min(200, parseInt($('rlist').value, 10) || 24)) };
   store.set('cfg', cfg);
+  if ($('logg')) { logGames = $('logg').checked; store.set('logGames', logGames); }
 }
 function openSetup(prefillJoin) {
   userDialog = true; openDialog(setupHTML());
@@ -492,5 +516,6 @@ function joinRoom(code, name) {
 // ---- boot -----------------------------------------------------------------------------------------
 const params = new URLSearchParams(location.search), joinCode = params.get('join');
 if (params.has('demo')) cfg = Object.assign({}, cfg, { seats: ['uct-fast', 'heuristic', 'uct-fast', 'heuristic'] });   // watch bots play
+if (logHere && !store.get('logNotice', false)) { store.set('logNotice', true); setTimeout(() => toast('Spiele werden anonym gespeichert (ohne Namen/IP), um die KI zu verbessern – abschaltbar unter „Neu“.'), 1500); }
 E.ready.then(() => { if (joinCode) openSetup(joinCode.toUpperCase()); else startMatch(); },
   e => { $('status').textContent = 'Die Spiel-Engine konnte nicht geladen werden (' + e.message + '). Bitte einen aktuellen Browser verwenden.'; });
