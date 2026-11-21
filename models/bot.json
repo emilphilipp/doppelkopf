@@ -1,0 +1,93 @@
+{
+ "arch": "multi",
+ "dtype": "f16",
+ "obsDim": 499,
+ "nAct": 45,
+ "hidden": 512,
+ "bodyLayers": 5,
+ "layout": [
+  {
+   "name": "scale",
+   "shape": [
+    499
+   ],
+   "offset": 0
+  },
+  {
+   "name": "w0",
+   "shape": [
+    512,
+    499
+   ],
+   "offset": 499
+  },
+  {
+   "name": "b0",
+   "shape": [
+    512
+   ],
+   "offset": 255987
+  },
+  {
+   "name": "w1",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 256499
+  },
+  {
+   "name": "b1",
+   "shape": [
+    512
+   ],
+   "offset": 518643
+  },
+  {
+   "name": "w2",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 519155
+  },
+  {
+   "name": "b2",
+   "shape": [
+    512
+   ],
+   "offset": 781299
+  },
+  {
+   "name": "w3",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 781811
+  },
+  {
+   "name": "b3",
+   "shape": [
+    512
+   ],
+   "offset": 1043955
+  },
+  {
+   "name": "w4",
+   "shape": [
+    45,
+    512
+   ],
+   "offset": 1044467
+  },
+  {
+   "name": "b4",
+   "shape": [
+    45
+   ],
+   "offset": 1067507
+  }
+ ],
+ "source": "final_4899536.pt"
+}

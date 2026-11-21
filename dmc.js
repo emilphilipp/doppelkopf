@@ -72,8 +72,12 @@ function encode(v) {
 }
 
 // ---- network ------------------------------------------------------------------------------------------
-function loadModel(meta, buffer) {   // meta = <name>.json, buffer = ArrayBuffer of <name>.bin
-  const f = new Float32Array(buffer), P = {};
+function halfToFloat(h) {   // IEEE float16 bits → number
+  const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023;
+  return e === 0 ? s * m * 2 ** -24 : e === 31 ? (m ? NaN : s * Infinity) : s * (1 + m / 1024) * 2 ** (e - 15);
+}
+function loadModel(meta, buffer) {   // meta = <name>.json, buffer = ArrayBuffer of <name>.bin (float32 or float16)
+  const f = meta.dtype === 'f16' ? Float32Array.from(new Uint16Array(buffer), halfToFloat) : new Float32Array(buffer), P = {};
   for (const l of meta.layout) P[l.name] = { shape: l.shape, data: f.subarray(l.offset, l.offset + l.shape.reduce((a, b) => a * b, 1)) };
   return { meta, P };
 }
@@ -86,6 +90,15 @@ function qValues(model, obs, acts) {   // Q for each legal action index
   const { P, meta } = model, H = meta.hidden;
   const x = new Float32Array(obs.length), sc = P.scale.data;
   for (let i = 0; i < obs.length; i++) x[i] = obs[i] * sc[i];
+  if (meta.arch === 'multi') {   // one pass over the observation → Q for all N_ACT actions, pick the legal ones
+    let h = x;
+    for (let L = 0; L < meta.bodyLayers; L++) {
+      const W = P['w' + L], out = linear(W, P['b' + L], h, new Float32Array(W.shape[0]));
+      if (L < meta.bodyLayers - 1) for (let k = 0; k < out.length; k++) if (out[k] < 0) out[k] = 0;
+      h = out;
+    }
+    return acts.map(ai => h[ai]);
+  }
   const h0 = linear(P.obs_w, P.obs_b, x, new Float32Array(H));
   let a = new Float32Array(H), b = new Float32Array(H);
   return acts.map(ai => {
@@ -108,12 +121,16 @@ function dmcBot(model) {
     return legal[best];
   };
 }
+async function loadModelUrl(base, query = '') {   // browser / worker: base = URL without .json/.bin, query e.g. '?v=6'
+  const meta = await (await fetch(base + '.json' + query)).json();
+  return loadModel(meta, await (await fetch(base + '.bin' + query)).arrayBuffer());
+}
 function loadModelFile(path) {   // node only
   const fs = require('fs');
   const meta = JSON.parse(fs.readFileSync(path + '.json', 'utf8')), buf = fs.readFileSync(path + '.bin');
   return loadModel(meta, buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 }
 
-const api = { encode, actionIndex, loadModel, loadModelFile, qValues, dmcBot, N_ACT, GAME_TYPES };
+const api = { encode, actionIndex, loadModel, loadModelUrl, loadModelFile, qValues, dmcBot, N_ACT, GAME_TYPES };
 if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.DokoDMC = api;
 })(typeof self !== 'undefined' ? self : this);

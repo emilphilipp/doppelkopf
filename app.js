@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const E = Doko;
 
 const BOT_TYPES = {
+  dmc: { label: 'Bot: KI (selbst trainiert)', bot: 'dmc' },
   heuristic: { label: 'Bot: Einfach (Regeln)', bot: 'heuristic' },
   'uct-fast': { label: 'Bot: UCT schnell (5×300)', bot: 'uct', opts: { dets: 5, iters: 300 } },
   uct: { label: 'Bot: UCT Sievers (10×1000)', bot: 'uct', opts: { dets: 10, iters: 1000 } },
@@ -19,13 +20,14 @@ const store = {
   get(k, d) { try { const x = localStorage.getItem('doko.' + k); return x ? JSON.parse(x) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('doko.' + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
 };
-let cfg = store.get('cfg', null) || { names: ['Du', 'Anna', 'Ben', 'Clara'], seats: ['human', 'uct', 'uct', 'uct'],
+let cfg = store.get('cfg', null) || { names: ['Du', 'Anna', 'Ben', 'Clara'], seats: ['human', 'dmc', 'dmc', 'dmc'],
   ruleset: 'house', listGames: 24 };
 if (!cfg.ruleset) { cfg.ruleset = 'house'; cfg.listGames = 24; delete cfg.rules; }   // configs from before the house rules
 const rulesOf = c => Object.assign({}, c.ruleset === 'ddv' ? E.DEFAULT_RULES : E.HOUSE_RULES, { listGames: c.listGames || 24 });
 
 // display prefs: design (skin) and bot speed (multiplier on the bots' minimum move time and the trick pause)
 let speed = Math.max(1, store.get('speed', 1.6));   // 1 = fastest offered
+let showQ = store.get('showQ', false);               // show the network's expected points next to my options
 function setSkin(k) {
   document.documentElement.dataset.skin = k; store.set('skin', k);
   document.querySelectorAll('.skins button').forEach(b => b.setAttribute('aria-pressed', b.dataset.s === k));
@@ -35,6 +37,8 @@ document.querySelectorAll('.skins button').forEach(b => { b.onclick = () => setS
 document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && !$('ov').classList.contains('on') && G && G.waitAck) { e.preventDefault(); ackTrick(); } });
 $('speed').value = String(speed);
 $('speed').onchange = () => { speed = +$('speed').value; store.set('speed', speed); };
+$('b-q').setAttribute('aria-pressed', showQ);
+$('b-q').onclick = () => { showQ = !showQ; store.set('showQ', showQ); $('b-q').setAttribute('aria-pressed', showQ); refresh(); };
 
 let mode = 'local';          // 'local' | 'host' | 'client'
 let G = null;                // match state (local / host)
@@ -44,14 +48,30 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0;
-try { worker = new Worker('worker.js?v=5'); worker.onmessage = e => botWaiting && botWaiting(e.data); } catch (e) { worker = null; }
+try { worker = new Worker('worker.js?v=6'); worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : botWaiting && botWaiting(e.data)); } catch (e) { worker = null; }
 function askBot(seat, cb) {
   const t = BOT_TYPES[G.cfg.seats[seat]], view = E.view(G.state, seat), legal = E.legalActions(G.state);
   const seed = (Math.random() * 2 ** 32) >>> 0, id = ++botReq;
   if (worker) { botWaiting = d => { if (d.id === id) { botWaiting = null; cb(d.a); } };
     worker.postMessage({ id, view, legal, bot: t.bot, opts: t.opts || {}, seed }); }
-  else setTimeout(() => cb(DokoBots.BOTS[t.bot].make(t.opts || {})(view, legal, E.rng(seed))), 0);
+  else setTimeout(() => cb((DokoBots.BOTS[t.bot] || DokoBots.BOTS.heuristic).make(t.opts || {})(view, legal, E.rng(seed))), 0);   // no worker: no network
 }
+
+// ---- the network's opinion on my options (expected points per legal action, asked from the worker) -----------
+let qShown = { key: '', q: null }, qAsked = { id: 0, key: '' };
+function wantQ(v, legal) {   // cached values for this decision, or null (then asks the worker and re-renders on reply)
+  const key = JSON.stringify([v.seat, v.phase, v.hands[v.seat], v.trick, v.tricks.length, v.resv, v.povGiven, v.povBack, v.annBy, legal]);
+  if (qShown.key === key) return qShown.q;
+  if (worker && qAsked.key !== key) { qAsked = { id: ++botReq, key }; worker.postMessage({ id: qAsked.id, view: v, legal, q: true }); }
+  return null;
+}
+function gotQ(d) {
+  if (d.id !== qAsked.id) return;
+  qShown = { key: qAsked.key, q: d.q };
+  if (!d.q && !gotQ.warned) { gotQ.warned = true; toast('KI-Tipps gibt es nur mit den Hausregeln'); }
+  refresh();
+}
+function qBadge(q, best) { return `<small class="qv${best ? ' best' : ''}" title="erwartete Punkte laut KI">${q > 0 ? '+' : ''}${q.toFixed(1)}</small>`; }
 
 // ---- match controller (local + host) ------------------------------------------------------------
 function startMatch() {
@@ -145,11 +165,11 @@ function humanAct(a) {
 
 // ---- rendering ------------------------------------------------------------------------------------
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function cardHTML(id, gt, extra = '') {
+function cardHTML(id, gt, extra = '', badge = '') {
   const t = id >> 1, su = (t / 6) | 0, rk = t % 6, red = su === E.H || su === E.D;
   const trump = E.TABLES[gt || 'normal'].cls[t] === 4;
   return `<div class="card s${su}${red ? ' red' : ''}${trump ? ' trump' : ''}${rk >= 2 && rk <= 4 ? ' court' : ''} ${extra}" data-id="${id}" title="${E.SUIT_DE[su]} ${E.RANK_DE[rk]}">` +
-    `<div class="tl">${E.RANK_DE[rk]}<small>${E.SUIT_SYM[su]}</small></div><div class="ctr">${rk >= 2 && rk <= 4 ? E.RANK_DE[rk] : E.SUIT_SYM[su]}</div><div class="big">${E.SUIT_SYM[su]}</div></div>`;
+    `<div class="tl">${E.RANK_DE[rk]}<small>${E.SUIT_SYM[su]}</small></div><div class="ctr">${rk >= 2 && rk <= 4 ? E.RANK_DE[rk] : E.SUIT_SYM[su]}</div><div class="big">${E.SUIT_SYM[su]}</div>${badge}</div>`;
 }
 function partyBadges(v, q, meta) {
   const out = [];
@@ -213,6 +233,10 @@ function render(v, meta) {
   // status + actions
   const myTurn = v.phase !== 'done' && v.turn === me && !meta.pause && coverFor < 0 && meta.seats[me] !== 'remote' && !isBot(meta.seats[me]) || (mode === 'client' && v.phase !== 'done' && v.turn === me && !meta.pause);
   const legal = myTurn ? E.legalActions(v) : [];
+  const qv = showQ && legal.length > 1 ? wantQ(v, legal) : null, qBest = qv ? Math.max(...qv) : 0;
+  const qOf = a => { const i = legal.indexOf(a); return qv && i >= 0 ? qBadge(qv[i], qv[i] === qBest) : ''; };
+  const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qv[i] > 0 ? '+' : ''}${qv[i].toFixed(1)})` : ''; };
+  const qCard = {}; if (qv) legal.forEach((a, i) => { if (a < 100) qCard[a >> 1] = qBadge(qv[i], qv[i] === qBest); });
   let status = '';
   if (v.phase === 'done') status = 'Spiel vorbei';
   else if (meta.pause) status = `${esc(meta.names[v.tricks[v.tricks.length - 1].winner])} bekommt den Stich`;
@@ -225,11 +249,11 @@ function render(v, meta) {
   $('status').innerHTML = status;
   let acts = '';
   if (myTurn && v.phase === 'reserve') {
-    for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}</button>`;
+    for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
     const soli = legal.filter(a => E.isSoloResv(E.RESV[a - E.ACT_RES]));
-    if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}</option>`).join('')}</select>`;
-  } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}</button>`;
-  else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}</button>`;
+    if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}</option>`).join('')}</select>`;
+  } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
+  else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
   const canAck = meta.ack && (mode === 'client' || meta.seats[me] === 'human');
   if (canAck) acts = '<button class="btn primary" id="ack">Weiter</button>';
   $('actions').innerHTML = acts;
@@ -247,7 +271,7 @@ function render(v, meta) {
   const w = Math.min(document.documentElement.clientWidth - 24, 760), cw = window.innerWidth <= 520 ? 50 : 62;
   const pad = parseFloat(getComputedStyle(H).paddingLeft) * 2 || 8;   // fanned designs keep room at the sides
   H.style.setProperty('--ov', Math.min(-4, Math.floor((w - 4 - pad - cw) / Math.max(1, hand.length - 1) - cw)) + 'px');
-  H.innerHTML = hand.map(id => cardHTML(id, v.phase === 'reserve' ? 'normal' : v.gameType, legalTypes.has(id >> 1) ? 'legal' : '')).join('');
+  H.innerHTML = hand.map(id => cardHTML(id, v.phase === 'reserve' ? 'normal' : v.gameType, legalTypes.has(id >> 1) ? 'legal' : '', legalTypes.has(id >> 1) && qCard[id >> 1] || '')).join('');
   H.style.setProperty('--n', hand.length); [...H.children].forEach((c, i) => c.style.setProperty('--i', i));
   H.querySelectorAll('.card.legal').forEach(c => { c.tabIndex = 0; c.onclick = () => humanAct(+c.dataset.id); });
 
@@ -325,7 +349,10 @@ $('b-rules').onclick = () => userOpen(cfg.ruleset === 'ddv' ? `<h2>DDV-Turnierre
   Pflichtsolo geht vor Lustsolo, der Solist spielt aus und der Geber gibt noch einmal. Beim Lustsolo spielt die normale Vorhand aus.
   Am Ende der Liste müssen die Übrigen vorführen.</p>
   <h3>Wertung</h3><p>Wie DDV: gewonnen · gegen die Alten · unter 90/60/30/schwarz · Re/Kontra je 2 · Absagen. Sonderpunkte (nicht im Solo):
-  Doppelkopf, Fuchs gefangen, Karlchen, <b>Karlchen gefangen</b>, <b>Fuchs macht letzten Stich</b>. Solo zählt dreifach.</p>`);
+  Doppelkopf, Fuchs gefangen, Karlchen, <b>Karlchen gefangen</b>, <b>Fuchs macht letzten Stich</b>. Solo zählt dreifach.</p>
+  <h3>KI-Bot und KI-Tipps</h3><p>„Bot: KI“ ist ein selbst trainiertes neuronales Netz (627 Mio. Übungsspiele gegen sich selbst, nur Hausregeln).
+  Mit <b>KI-Tipps</b> zeigt es bei jeder deiner Entscheidungen, wie viele Punkte es für dich erwartet; grün = was es selbst wählen würde.
+  Achtung: es spielt noch viel zu gern Solo.</p>`);
 
 function setupHTML() {
   const seatRows = [0, 1, 2, 3].map(q => `<div class="row"><input type="text" id="n${q}" value="${esc(cfg.names[q])}" maxlength="12">
