@@ -246,6 +246,7 @@ function render(v, meta) {
     : v.phase === 'povReturn' ? `<b>Armut:</b> <small>gib ${3 - v.povBack.length} Karte(n) zurück</small>`
     : `<b>Du bist dran</b>${v.trick.length ? '' : ' <small>– spiel aus</small>'}`;
   else status = `${esc(meta.names[v.turn])} ${isBot(meta.seats[v.turn]) ? 'überlegt…' : 'ist dran'}`;
+  if (qv) { const b = qv.indexOf(qBest); status += ` <small class="qhint">KI würde: ${E.actionName(legal[b], v)} ${qBadge(qBest, true)}</small>`; }
   $('status').innerHTML = status;
   let acts = '';
   if (myTurn && v.phase === 'reserve') {
