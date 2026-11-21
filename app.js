@@ -1,5 +1,6 @@
 // Doppelkopf web UI: local play vs bots, pass-and-play (several humans on one device), online play via PeerJS.
 // The host's browser runs the game; online players only receive their own view (no hidden cards).
+// Rules, bots and the network run in Rust (dokors.wasm) behind doko.js; this file is presentation and networking.
 'use strict';
 const $ = id => document.getElementById(id);
 const E = Doko;
@@ -49,7 +50,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=8');
+  worker = new Worker('worker.js?v=9');
   worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -68,7 +69,7 @@ function askBot(seat, cb) {
     clearTimeout(botTimer); botTimer = setTimeout(() => workerBroken('no answer after 60 s'), 60000);
     worker.postMessage({ id, view, legal, bot: t.bot, opts: t.opts || {}, seed });
   }
-  else setTimeout(() => cb((DokoBots.BOTS[t.bot] || DokoBots.BOTS.heuristic).make(t.opts || {})(view, legal, E.rng(seed))), 0);   // no worker: no network
+  else setTimeout(() => cb(E.BOTS[t.bot === 'dmc' ? 'heuristic' : t.bot].make(t.opts || {})(view, legal, E.rng(seed))), 0);   // no worker: no network
 }
 
 // ---- the network's opinion on my options (expected points per legal action, asked from the worker) -----------
@@ -491,5 +492,5 @@ function joinRoom(code, name) {
 // ---- boot -----------------------------------------------------------------------------------------
 const params = new URLSearchParams(location.search), joinCode = params.get('join');
 if (params.has('demo')) cfg = Object.assign({}, cfg, { seats: ['uct-fast', 'heuristic', 'uct-fast', 'heuristic'] });   // watch bots play
-if (joinCode) openSetup(joinCode.toUpperCase());
-else startMatch();
+E.ready.then(() => { if (joinCode) openSetup(joinCode.toUpperCase()); else startMatch(); },
+  e => { $('status').textContent = 'Die Spiel-Engine konnte nicht geladen werden (' + e.message + '). Bitte einen aktuellen Browser verwenden.'; });
