@@ -73,7 +73,8 @@ function newGame(opts = {}) {
     const d = shuffle(deck(rules), opts.rand || rng(opts.seed ?? (Math.random() * 2 ** 32))), n = d.length / 4;
     hands = [0, 1, 2, 3].map(p => d.slice(p * n, p * n + n));
   }
-  const s = call('newGame', { rules, dealer: opts.dealer ?? 0, hands, duty: opts.duty || [false, false, false, false], forced: opts.forced ?? -1 });
+  const s = call('newGame', { rules, dealer: opts.dealer ?? 0, hands, duty: opts.duty || [false, false, false, false], forced: opts.forced ?? -1,
+    listLeft: opts.listLeft ?? -1 });   // normal games left in the Pflichtsolo list, this one included (-1 = no list)
   s.log = [];
   return s;
 }

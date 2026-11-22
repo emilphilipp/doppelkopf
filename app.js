@@ -28,7 +28,7 @@ const rulesOf = c => Object.assign({}, c.ruleset === 'ddv' ? E.DEFAULT_RULES : E
 
 // display prefs: design (skin) and bot speed (multiplier on the bots' minimum move time and the trick pause)
 let speed = Math.max(1, store.get('speed', 1.6));   // 1 = fastest offered
-let showQ = store.get('showQ', false);               // show the network's expected points next to my options
+let showQ = store.get('showQ', false);               // show the network's opinion (expected points, or % for a policy network) next to my options
 
 // anonymous game log (to train and test the KI on games with people): deal, seats, moves, result — no names, no IP
 const LOG_URL = 'https://doko-log.doko-games.workers.dev/games';   // log-worker/ (Cloudflare); '' = logging off
@@ -60,7 +60,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=10');
+  worker = new Worker('worker.js?v=11');
   worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -82,8 +82,9 @@ function askBot(seat, cb) {
   else setTimeout(() => cb(E.BOTS[t.bot === 'dmc' ? 'heuristic' : t.bot].make(t.opts || {})(view, legal, E.rng(seed))), 0);   // no worker: no network
 }
 
-// ---- the network's opinion on my options (expected points per legal action, asked from the worker) -----------
-let qShown = { key: '', q: null }, qAsked = { id: 0, key: '' };
+// ---- the network's opinion on my options (expected points per legal action, or for a policy network the chance
+// it would pick each one; asked from the worker) -----------
+let qShown = { key: '', q: null }, qAsked = { id: 0, key: '' }, qPct = false;
 function wantQ(v, legal) {   // cached values for this decision, or null (then asks the worker and re-renders on reply)
   const key = JSON.stringify([v.seat, v.phase, v.hands[v.seat], v.trick, v.tricks.length, v.resv, v.povGiven, v.povBack, v.annBy, legal]);
   if (qShown.key === key) return qShown.q;
@@ -92,11 +93,12 @@ function wantQ(v, legal) {   // cached values for this decision, or null (then a
 }
 function gotQ(d) {
   if (d.id !== qAsked.id) return;
-  qShown = { key: qAsked.key, q: d.q };
+  qShown = { key: qAsked.key, q: d.q }; qPct = !!d.pct;
   if (!d.q && !gotQ.warned) { gotQ.warned = true; toast('KI-Tipps gibt es nur mit den Hausregeln'); }
   refresh();
 }
-function qBadge(q, best) { return `<small class="qv${best ? ' best' : ''}" title="erwartete Punkte laut KI">${q > 0 ? '+' : ''}${q.toFixed(1)}</small>`; }
+const qFmt = q => qPct ? `${Math.round(q)} %` : `${q > 0 ? '+' : ''}${q.toFixed(1)}`;
+function qBadge(q, best) { return `<small class="qv${best ? ' best' : ''}" title="${qPct ? 'so wahrscheinlich würde die KI das spielen' : 'erwartete Punkte laut KI'}">${qFmt(q)}</small>`; }
 
 // ---- match controller (local + host) ------------------------------------------------------------
 function startMatch() {
@@ -119,9 +121,10 @@ function nextGame() {
     const owing = [1, 2, 3, 4].map(i => (G.dealer + i) % 4).filter(q => G.duty[q]);
     if (owing.length && G.rules.listGames - G.listCount <= owing.length) forced = owing[0];
   }
-  G.state = E.newGame({ dealer: G.dealer, rules: G.rules, duty, forced });
+  const listLeft = G.rules.dutySolo ? Math.max(0, G.rules.listGames - G.listCount) : -1;   // as in training (the KI reads it)
+  G.state = E.newGame({ dealer: G.dealer, rules: G.rules, duty, forced, listLeft });
   G.rec = { v: 1, site: 'v' + window.DOKO_VERSION, rules: G.cfg.ruleset === 'ddv' ? 'ddv' : 'house', listGames: G.rules.listGames, model: null,
-    dealer: G.dealer, hands: G.state.hands.map(h => h.slice()), duty, forced, seats: G.cfg.seats.slice(), actions: [] };
+    dealer: G.dealer, hands: G.state.hands.map(h => h.slice()), duty, forced, listLeft, seats: G.cfg.seats.slice(), actions: [] };
   G.recorded = false; G.pauseUntil = 0; G.waitAck = false;
   update();
 }
@@ -268,7 +271,7 @@ function render(v, meta) {
   const legal = myTurn ? E.legalActions(v) : [];
   const qv = showQ && legal.length > 1 ? wantQ(v, legal) : null, qBest = qv ? Math.max(...qv) : 0;
   const qOf = a => { const i = legal.indexOf(a); return qv && i >= 0 ? qBadge(qv[i], qv[i] === qBest) : ''; };
-  const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qv[i] > 0 ? '+' : ''}${qv[i].toFixed(1)})` : ''; };
+  const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qFmt(qv[i])})` : ''; };
   const qCard = {}; if (qv) legal.forEach((a, i) => { if (a < 100) qCard[a >> 1] = qBadge(qv[i], qv[i] === qBest); });
   let status = '';
   if (v.phase === 'done') status = 'Spiel vorbei';
@@ -384,8 +387,8 @@ $('b-rules').onclick = () => userOpen(cfg.ruleset === 'ddv' ? `<h2>DDV-Turnierre
   Am Ende der Liste müssen die Übrigen vorführen.</p>
   <h3>Wertung</h3><p>Wie DDV: gewonnen · gegen die Alten · unter 90/60/30/schwarz · Re/Kontra je 2 · Absagen. Sonderpunkte (nicht im Solo):
   Doppelkopf, Fuchs gefangen, Karlchen, <b>Karlchen gefangen</b>, <b>Fuchs macht letzten Stich</b>. Solo zählt dreifach.</p>
-  <h3>KI-Bot und KI-Tipps</h3><p>„Bot: KI“ ist ein selbst trainiertes neuronales Netz (627 Mio. Übungsspiele gegen sich selbst, nur Hausregeln).
-  Mit <b>KI-Tipps</b> zeigt es bei jeder deiner Entscheidungen, wie viele Punkte es für dich erwartet; grün = was es selbst wählen würde.
+  <h3>KI-Bot und KI-Tipps</h3><p>„Bot: KI“ ist ein selbst trainiertes neuronales Netz (rund 1,1 Mrd. Übungsspiele, meist gegen sich selbst, nur Hausregeln).
+  Mit <b>KI-Tipps</b> zeigt es bei jeder deiner Entscheidungen, wie wahrscheinlich es selbst so spielen würde; grün = sein Favorit.
   Achtung: es spielt noch viel zu gern Solo.</p>${logHere ? `
   <h3>Datenschutz</h3><p>Fertige Spiele, an denen ein Mensch teilnimmt, werden <b>anonym</b> gespeichert, um die KI zu verbessern:
   Kartenverteilung, Züge, Ergebnis und Spielversion. <b>Keine Namen, keine IP-Adressen, keine Geräte-Kennung.</b>
