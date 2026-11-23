@@ -1,15 +1,15 @@
 {
  "arch": "multi",
  "dtype": "f16",
- "obsDim": 501,
- "nAct": 45,
+ "obsDim": 502,
+ "nAct": 46,
  "hidden": 512,
  "bodyLayers": 5,
  "layout": [
   {
    "name": "scale",
    "shape": [
-    501
+    502
    ],
    "offset": 0
   },
@@ -17,16 +17,16 @@
    "name": "w0",
    "shape": [
     512,
-    501
+    502
    ],
-   "offset": 501
+   "offset": 502
   },
   {
    "name": "b0",
    "shape": [
     512
    ],
-   "offset": 257013
+   "offset": 257526
   },
   {
    "name": "w1",
@@ -34,14 +34,14 @@
     512,
     512
    ],
-   "offset": 257525
+   "offset": 258038
   },
   {
    "name": "b1",
    "shape": [
     512
    ],
-   "offset": 519669
+   "offset": 520182
   },
   {
    "name": "w2",
@@ -49,14 +49,14 @@
     512,
     512
    ],
-   "offset": 520181
+   "offset": 520694
   },
   {
    "name": "b2",
    "shape": [
     512
    ],
-   "offset": 782325
+   "offset": 782838
   },
   {
    "name": "w3",
@@ -64,31 +64,31 @@
     512,
     512
    ],
-   "offset": 782837
+   "offset": 783350
   },
   {
    "name": "b3",
    "shape": [
     512
    ],
-   "offset": 1044981
+   "offset": 1045494
   },
   {
    "name": "w4",
    "shape": [
-    45,
+    46,
     512
    ],
-   "offset": 1045493
+   "offset": 1046006
   },
   {
    "name": "b4",
    "shape": [
-    45
+    46
    ],
-   "offset": 1068533
+   "offset": 1069558
   }
  ],
- "source": "gpuAd/final_0057909.pt",
+ "source": "gpuAd4/final_0166204.pt",
  "kind": "policy"
 }

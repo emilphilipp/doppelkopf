@@ -28,7 +28,7 @@ function cardName(id) { const t = id >> 1; return SUIT_SYM[(t / 6) | 0] + RANK_D
 function actionName(a, s) {
   if (a >= ACT_POV) return a === ACT_POV ? 'Nicht mitnehmen' : 'Armut mitnehmen';
   if (a >= ACT_RES) return RESV_DE[RESV[a - ACT_RES]];
-  if (a >= ACT_ANN) { const k = a - ACT_ANN; return k === 1 ? (s && s.team[s.turn] === 0 ? 'Kontra' : 'Re') : ANN_DE[ANN[k]]; }
+  if (a >= ACT_ANN) { const k = a - ACT_ANN; return k === 0 ? 'Keine Ansage' : k === 1 ? (s && s.team[s.turn] === 0 ? 'Kontra' : 'Re') : ANN_DE[ANN[k]]; }
   return cardName(a);
 }
 function sortHand(hand, gameType) {   // trumps first (high → low), then the suits in order ♣ ♠ ♥ ♦

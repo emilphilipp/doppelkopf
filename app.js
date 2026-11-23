@@ -60,7 +60,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=11');
+  worker = new Worker('worker.js?v=12');
   worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -125,7 +125,7 @@ function nextGame() {
   G.state = E.newGame({ dealer: G.dealer, rules: G.rules, duty, forced, listLeft });
   G.rec = { v: 1, site: 'v' + window.DOKO_VERSION, rules: G.cfg.ruleset === 'ddv' ? 'ddv' : 'house', listGames: G.rules.listGames, model: null,
     dealer: G.dealer, hands: G.state.hands.map(h => h.slice()), duty, forced, listLeft, seats: G.cfg.seats.slice(), actions: [] };
-  G.recorded = false; G.pauseUntil = 0; G.waitAck = false;
+  G.recorded = false; G.pauseUntil = 0; G.waitAck = false; G.armed = [0, 0, 0, 0];
   update();
 }
 function act(seat, a, q, model) {   // q, model: the KI bot's values for its legal moves (logged)
@@ -162,6 +162,7 @@ function update() {
       re: [0, 1, 2, 3].filter(q => s.team[q] === 1), duty: !!r.dutyGame, winner: r.winner, value: r.value, perSeat: r.perSeat, rePts: r.re });
   }
   const pause = Date.now() < G.pauseUntil || G.waitAck;
+  if (!pause && s.phase === 'play' && !isBot(G.cfg.seats[s.turn]) && autoAnn()) return;
   // which seat does this screen show? (not switched while the finished trick waits for confirmation)
   const humans = humanSeats();
   if (!G.waitAck && s.phase !== 'done' && humans.includes(s.turn) && s.turn !== viewSeat) {
@@ -177,18 +178,33 @@ function update() {
     G.thinking = true;
     const t0 = Date.now(), g = G, st = s, n = s.log.length;
     askBot(s.turn, (a, q, model) => {
-      const wait = Math.max(0, (st.phase === 'reserve' ? 350 : 550) * speed - (Date.now() - t0));
+      const wait = st.annAsk && st.annAsk.length ? 0 : Math.max(0, (st.phase === 'reserve' ? 350 : 550) * speed - (Date.now() - t0));
       setTimeout(() => { if (G !== g) return; g.thinking = false; if (g.state === st && st.log.length === n) act(st.turn, a, q, model); else update(); }, wait);
     });
   }
 }
+// Announcements at any time (house and DDV rules): the engine asks everyone who could announce before each card. People
+// aren't asked: an announcement tapped outside their own turn is queued and made at the next moment the rules allow
+// (before the next card); without one the question is passed (no click after every card, as in the app).
+const isAnn = a => a > E.ACT_ANN && a < E.ACT_RES;
+function annOption(v, seat) {   // the announcement this seat could make now, if any
+  return v.phase === 'play' ? E.legalActions(Object.assign({}, v, { turn: seat, annAsk: [seat] })).find(isAnn) : undefined;
+}
+function autoAnn() {   // the person to move: a queued announcement, or pass an out-of-turn question (→ act → update)
+  const s = G.state, q = s.turn, a = G.armed[q];
+  if (a && annOption(s, q) !== a) G.armed[q] = 0;   // no longer possible (deadline passed, or the level moved on)
+  else if (a) { G.armed[q] = 0; act(q, a); return true; }
+  if (s.annAsk.length) { act(q, E.ACT_ANN); return true; }
+  return false;
+}
+function arm(seat, a) { G.armed[seat] = G.armed[seat] === a ? 0 : a; update(); }
 function ackTrick() {
   if (mode === 'client') { if (client.conn) client.conn.send({ t: 'ack' }); return; }
   if (G && G.waitAck) { G.waitAck = false; update(); }
 }
 function metaFor(seat) {
   return { names: G.cfg.names, seats: G.cfg.seats, scores: G.scores, history: G.history, gameNo: G.gameNo,
-    pause: Date.now() < G.pauseUntil || G.waitAck, ack: G.waitAck, me: seat, host: mode !== 'client', thinking: G.thinking };
+    pause: Date.now() < G.pauseUntil || G.waitAck, ack: G.waitAck, me: seat, host: mode !== 'client', thinking: G.thinking, armed: G.armed[seat] };
 }
 function renderLocal() {
   if (mode === 'client' || !G) return;
@@ -196,7 +212,7 @@ function renderLocal() {
 }
 function humanAct(a) {
   if (mode === 'client') { if (client.conn) client.conn.send({ t: 'act', a }); return; }
-  if (G && G.cfg.seats[viewSeat] === 'human') act(viewSeat, a);
+  if (G && G.cfg.seats[viewSeat] === 'human') { if (isAnn(a) && G.state.turn !== viewSeat) arm(viewSeat, a); else act(viewSeat, a); }
 }
 
 // ---- rendering ------------------------------------------------------------------------------------
@@ -283,7 +299,6 @@ function render(v, meta) {
     : `<b>Du bist dran</b>${v.trick.length ? '' : ' <small>– spiel aus</small>'}`;
   else status = `${esc(meta.names[v.turn])} ${isBot(meta.seats[v.turn]) ? 'überlegt…' : 'ist dran'}`;
   if (qv) { const b = qv.indexOf(qBest); status += ` <small class="qhint">KI würde: ${E.actionName(legal[b], v)} ${qBadge(qBest, true)}</small>`; }
-  $('status').innerHTML = status;
   let acts = '';
   if (myTurn && v.phase === 'reserve') {
     for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
@@ -291,6 +306,12 @@ function render(v, meta) {
     if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}</option>`).join('')}</select>`;
   } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
   else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
+  else if (v.phase === 'play' && coverFor < 0 && (mode === 'client' || meta.seats[me] === 'human')) {   // not my turn: queue it
+    const a = annOption(v, me), on = a && meta.armed === a;
+    if (a) acts += `<button class="btn${on ? ' armed' : ''}" data-a="${a}" title="${on ? 'angemeldet – nochmal tippen zum Zurücknehmen' : 'wird vor der nächsten Karte angesagt'}">${E.actionName(a, Object.assign({}, v, { turn: me }))}${on ? ' ✓' : ''}</button>`;
+    if (on) status += ` <small>– ${E.actionName(a, Object.assign({}, v, { turn: me }))} kommt vor der nächsten Karte</small>`;
+  }
+  $('status').innerHTML = status;
   const canAck = meta.ack && (mode === 'client' || meta.seats[me] === 'human');
   if (canAck) acts = '<button class="btn primary" id="ack">Weiter</button>';
   $('actions').innerHTML = acts;
@@ -491,7 +512,7 @@ function hostMsg(c, d) {
     if (remote.includes(c)) ackTrick();
   } else if (d.t === 'act') {
     const seat = remote.indexOf(c);
-    if (seat >= 0 && G && G.cfg.seats[seat] === 'remote') act(seat, d.a);
+    if (seat >= 0 && G && G.cfg.seats[seat] === 'remote') { if (isAnn(d.a) && G.state.turn !== seat) arm(seat, d.a); else act(seat, d.a); }
   }
 }
 function broadcast() {
