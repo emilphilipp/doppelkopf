@@ -63,7 +63,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=15');
+  worker = new Worker('worker.js?v=16');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -198,7 +198,8 @@ function act(seat, a, q, model) {   // q, model: the KI bot's values for its leg
   }
   const nt = G.state.tricks.length;
   const x = { s: seat, a };
-  if (q) { x.q = q.map(v => Math.round(v * 100) / 100); if (model) G.rec.model = model; }
+  // capped: the log server takes |value| < 1000, and a policy network's hopeless options (logits × 4) go far below
+  if (q) { x.q = q.map(v => Math.max(-999, Math.min(999, Math.round(v * 100) / 100))); if (model) G.rec.model = model; }
   if (G.cfg.seats[seat] === 'human' && showQ) x.h = 1;   // the person saw the KI-Tipps for this move
   G.rec.actions.push(x);
   E.step(G.state, a);
