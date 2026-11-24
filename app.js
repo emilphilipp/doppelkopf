@@ -63,7 +63,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=14');
+  worker = new Worker('worker.js?v=15');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -125,8 +125,8 @@ function costBadge(c) {
   const [, cls, sign] = coachLevel(c);
   return `<small class="cq ${cls}" title="${coachLevel(c)[3]}: kostet im Schnitt ${c.toFixed(2)} Punkte">${c < 0.05 ? '★' : '−' + c.toFixed(1)}</small>`;
 }
-// the review: replay the game record, collect my card decisions, ask the worker for all of them at once
-let review = null;   // { id, rec, seat, items: [{v, legal, a, costs, best, cost}], at, all } or null
+// the review: replay the game record, one step per trick (my card), ask the worker for all real choices at once
+let review = null;   // { id, rec, seat, tricks, items: [{v, legal, a, forced, costs, best, cost}], at, all } or null
 function startReview(seat) {
   if (!G || !G.rec || mode === 'client' || !worker || G.rules.withNines) { review = null; return; }
   if (review && review.rec === G.rec && review.seat === seat) return;
@@ -135,25 +135,25 @@ function startReview(seat) {
   for (const x of r.actions) {
     if (x.s === seat && s.phase === 'play' && !(s.annAsk && s.annAsk.length) && x.a < E.ACT_ANN) {
       const legal = E.legalActions(s);
-      if (ratedCards(legal).length > 1) items.push({ v: E.view(s, seat), all: s.hands.map(h => h.slice()), legal, a: x.a });
+      items.push({ v: E.view(s, seat), all: s.hands.map(h => h.slice()), legal, a: x.a, forced: ratedCards(legal).length < 2, costs: {}, cost: 0 });
     }
     E.step(s, x.a);
   }
-  review = { id: ++botReq, rec: r, seat, items, at: 0, ready: false };
-  if (items.length) worker.postMessage({ id: review.id, coachQ: true, view: items[0].v, items: items.map(it => ({ view: it.v, legal: it.legal })) });
-  else review.ready = true;
+  const ask = items.filter(it => !it.forced);
+  review = { id: ++botReq, rec: r, seat, items, ask, tricks: s.tricks, at: 0, ready: !ask.length };
+  if (ask.length) worker.postMessage({ id: review.id, coachQ: true, view: ask[0].v, items: ask.map(it => ({ view: it.v, legal: it.legal })) });
 }
 function gotReview(d) {
   if (!review || d.id !== review.id) return;
   if (!d.review) { review = null; return; }
-  review.items.forEach((it, k) => { const c = cardCosts(it.legal, d.review[k]); it.costs = c.costs; it.best = c.best; it.cost = c.costs[it.a >> 1] || 0; });
+  review.ask.forEach((it, k) => { const c = cardCosts(it.legal, d.review[k]); it.costs = c.costs; it.best = c.best; it.cost = c.costs[it.a >> 1] || 0; });
   review.ready = true;
   if (review.open) showReview(); else refresh();
 }
 function reviewSummary() {   // counts per label + total expected loss, or '' while the coach still works
-  if (!review || !review.ready || !review.items.length) return '';
+  if (!review || !review.ready || !review.ask.length) return '';
   const n = COACH_LEVELS.map(() => 0); let tot = 0;
-  for (const it of review.items) { n[COACH_LEVELS.indexOf(coachLevel(it.cost))]++; tot += it.cost; }
+  for (const it of review.ask) { n[COACH_LEVELS.indexOf(coachLevel(it.cost))]++; tot += it.cost; }
   return COACH_LEVELS.map(([, cls, sign, word], k) => n[k] ? `<span class="cq ${cls}">${sign}</span> ${n[k]}× ${word}` : '').filter(Boolean).join(' · ') +
     `<br>Zusammen ca. <b>${tot.toFixed(1)} Punkte</b> verschenkt (erwartete Punkte aus deiner Sicht – ohne Kartenglück)`;
 }
@@ -432,24 +432,26 @@ function showResult(v, meta) {  // stays open until the next game starts
   if (meta.host) $('r-next').onclick = () => { closeDialog(); nextGame(); };
 }
 function coachHTML() {   // the coach's verdict on my cards of this game
-  if (!review || !review.items.length) return '';
+  if (!review || !review.ask.length) return '';
   return `<h3>Coach</h3><p class="hint">${review.ready ? reviewSummary() : 'Der Coach bewertet deine Karten…'}</p>`;
 }
-function showReview() {   // chess.com-style: step through my card decisions, every playable card with its cost
+const FORCED = [0, 'none', '·', 'keine Wahl'];
+function showReview() {   // chess.com-style: step through every trick (my card), every playable card with its cost
   const R = review, it = R.items[R.at], meta = metaFor(R.seat), nm = q => esc(meta.names[q]), v = it.v, gt = v.gameType;
-  const strip = R.items.map((x, k) => { const [, cls, sign] = coachLevel(x.cost);
-    return `<button class="rv-chip cq ${cls}${k === R.at ? ' on' : ''}" data-k="${k}" title="Stich ${x.v.tricks.length + 1}: ${coachLevel(x.cost)[3]}">${x.v.tricks.length + 1}<b>${sign}</b></button>`; }).join('');
-  const [, cls, sign, word] = coachLevel(it.cost);
+  const lvl = x => x.forced ? FORCED : coachLevel(x.cost);
+  const strip = R.items.map((x, k) => { const [, cls, sign, word] = lvl(x);
+    return `<button class="rv-chip cq ${cls}${k === R.at ? ' on' : ''}" data-k="${k}" title="Stich ${x.v.tricks.length + 1}: ${word}">${x.v.tricks.length + 1}<b>${sign}</b></button>`; }).join('');
+  const [, cls, sign, word] = lvl(it);
   const table = v.trick.length ? v.trick.map((id, j) => `<div class="rv-c">${cardHTML(id, gt)}<span>${nm((v.leader + j) % 4)}</span></div>`).join('') : '<span class="hint">Du spielst aus.</span>';
   const hand = E.sortHand(v.hands[R.seat], gt).map(id => { const c = it.costs[id >> 1];
-    return cardHTML(id, gt, (c === undefined ? 'off' : 'legal') + (id === it.a ? ' played' : ''), c === undefined ? '' : costBadge(c)); }).join('');
+    return cardHTML(id, gt, (c === undefined && id !== it.a ? 'off' : 'legal') + (id === it.a ? ' played' : ''), c === undefined ? '' : costBadge(c)); }).join('');
   const others = R.all ? [1, 2, 3].map(r => (R.seat + r) % 4).map(q => `<div class="rv-row"><span class="rv-nm">${nm(q)}</span>${E.sortHand(it.all[q], gt).map(id => cardHTML(id, gt)).join('')}</div>`).join('') : '';
-  const prev = v.tricks.length ? v.tricks[v.tricks.length - 1] : null;
+  const done = R.tricks[v.tricks.length];   // how this trick ended
   openDialog(`<h2>Analyse</h2><p class="hint">${reviewSummary()}</p><div class="rv-strip">${strip}</div>
     <h3>Stich ${v.tricks.length + 1} · ${gameLabel(v, meta)}</h3>
-    ${prev ? `<p class="hint">Stich davor: ${prev.cards.map(id => esc(E.cardName(id))).join(' ')} → ${nm(prev.winner)}</p>` : ''}
     <div class="rv-row rv-table">${table}</div>
-    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(E.actionName(it.a, v))}</b> – ${word}${it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(E.actionName(it.best, v))}</b>` : ''}</p>
+    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(E.actionName(it.a, v))}</b> – ${it.forced ? 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(E.actionName(it.best, v))}</b>` : ''}</p>
+    ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
     <div class="rv-row rv-hand">${hand}</div>
     <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
     <p class="hint">Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.</p>

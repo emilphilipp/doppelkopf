@@ -5,17 +5,17 @@
 // reservation leak it gained nothing, -0.05 ± 0.07 vs the plain network): sampled deals that fit the bot's own view
 // (never the real hidden cards), every card tried, the actor plays on, the critic judges. The number of sampled deals
 // adapts to the device: about BUDGET ms per decision, at most 60; a device too slow for MIN_DETS plays without search.
-self.DOKO_VERSION = 14;
-importScripts('doko.js?v=14');
+self.DOKO_VERSION = 15;
+importScripts('doko.js?v=15');
 let net = null, critic = null, coach = null, netName = null, policy = false;
 let withCritic = false;   // bot.json "critic": true → models/critic is deployed too (search at play time)
-const netReady = Doko.ready.then(() => fetch('models/bot.json?v=14')).then(r => r.json()).then(m => { netName = m.source; policy = m.kind === 'policy'; withCritic = !!m.critic; })
-  .then(() => Doko.loadNetUrl('models/bot', '?v=14')).then(id => { net = id; }, () => { net = null; })
-  .then(() => withCritic ? Doko.loadNetUrl('models/critic', '?v=14').then(id => { critic = id; }, () => { critic = null; }) : null);
+const netReady = Doko.ready.then(() => fetch('models/bot.json?v=15')).then(r => r.json()).then(m => { netName = m.source; policy = m.kind === 'policy'; withCritic = !!m.critic; })
+  .then(() => Doko.loadNetUrl('models/bot', '?v=15')).then(id => { net = id; }, () => { net = null; })
+  .then(() => withCritic ? Doko.loadNetUrl('models/critic', '?v=15').then(id => { critic = id; }, () => { critic = null; }) : null);
 // Coach (since 24 Nov): a separate network, trained on what each card is worth from the player's own view (taught on
 // real deals, so it averages over the hidden cards honestly); loaded on first use. Its outputs are points × 4 (qValues).
 let coachReady = null;
-const loadCoach = () => coachReady || (coachReady = Doko.loadNetUrl('models/coach', '?v=14').then(id => { coach = id; }, () => { coach = null; }));
+const loadCoach = () => coachReady || (coachReady = Doko.loadNetUrl('models/coach', '?v=15').then(id => { coach = id; }, () => { coach = null; }));
 const trained = v => net !== null && !v.rules.withNines;   // the network only knows the house rules (no nines)
 // a policy network's outputs are preferences (logits × 4 from qValues), not points: softmax → %
 const shown = q => { if (!policy) return q; const m = Math.max(...q), e = q.map(x => Math.exp((x - m) / 4)), t = e.reduce((a, b) => a + b, 0); return e.map(x => 100 * x / t); };
