@@ -73,6 +73,21 @@ select.mini{border-radius:999px;padding:4px 8px;font-size:13px}
 .qv.best{background:var(--good);color:var(--bg)}
 .card .qv{position:absolute;left:3px;bottom:6px;z-index:2}
 .btn .qv{margin-left:6px}
+.cq{font:700 11px/1 var(--font);padding:2px 4px;border-radius:6px;color:#fff;white-space:nowrap}
+.cq.best{background:#15a36b}.cq.good{background:#5fae4e}.cq.inacc{background:#f2b705;color:#1a1a1a}.cq.mistake{background:#ef7a1a}.cq.blunder{background:#d92d20}
+.card .cq{position:absolute;left:3px;bottom:24px;z-index:2}
+.card.off{opacity:.4}
+.card.played{box-shadow:0 0 0 3px var(--turn),var(--card-shadow);translate:0 -6px}
+.rv-strip{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.rv-chip{border:0;font:700 12px/1 var(--font);padding:5px 6px;border-radius:8px;cursor:pointer;opacity:.7}
+.rv-chip b{margin-left:2px}.rv-chip.on{opacity:1;outline:2px solid var(--text);outline-offset:1px}
+.rv-row{display:flex;flex-wrap:wrap;gap:4px;align-items:flex-end;margin:6px 0;--cardw:44px;--cardh:64px}
+.rv-row .card .cq{bottom:4px}
+.rv-hand{padding-top:8px}
+.rv-c{text-align:center;font-size:11px}
+.rv-nm{width:56px;font-size:12px;align-self:center}
+.rv-verdict{font-size:15px;margin:10px 0 2px}
+.rv-all{display:flex;gap:6px;align-items:center;margin-top:8px}
 .qhint{white-space:nowrap;margin-left:6px}
 
 /* ---- table ---- */
@@ -227,7 +242,7 @@ table.res td:last-child{text-align:right;font-variant-numeric:tabular-nums}
       <div class="skins" role="group" aria-label="Design"><button data-s="klar" title="Design: Klar"></button><button data-s="stube" title="Design: Stube"></button><button data-s="stamm" title="Design: Stammtisch"></button></div>
       <select class="mini" id="speed" title="Tempo der Bots"><option value="1">Schnell</option><option value="1.6">Normal</option><option value="2.5">Langsam</option></select>
       <button class="btn small" id="b-q" title="KI-Tipps: wie wahrscheinlich die KI jede deiner Möglichkeiten spielen würde (grün = ihre Wahl)">KI-Tipps</button>
-      <button class="btn small" id="b-coach" title="Coach: bewertet jede deiner Karten nach dem Ausspielen – wie viele Punkte sie im Schnitt kostet, ohne Kartenglück – und zeigt am Spielende die Auswertung">Coach</button>
+      <button class="btn small" id="b-coach" title="Coach live: zeigt auf jeder spielbaren Karte, wie viele Punkte sie im Schnitt kostet (★ = beste) – ohne Kartenglück. Die Analyse am Spielende gibt es immer.">Coach</button>
     </div>
     <button class="btn small" id="b-scores">Spielliste</button>
     <button class="btn small" id="b-rules">Regeln</button>
@@ -252,8 +267,8 @@ table.res td:last-child{text-align:right;font-variant-numeric:tabular-nums}
 <div class="overlay" id="ov"><div class="dialog" id="dlg"></div></div>
 <div class="toast" id="toast"></div>
 
-<script>window.DOKO_VERSION = 13;</script>
-<script src="doko.js?v=13"></script>
-<script src="app.js?v=13"></script>
+<script>window.DOKO_VERSION = 14;</script>
+<script src="doko.js?v=14"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

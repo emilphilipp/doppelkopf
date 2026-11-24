@@ -28,7 +28,7 @@ const rulesOf = c => Object.assign({}, c.ruleset === 'ddv' ? E.DEFAULT_RULES : E
 
 // display prefs: design (skin) and bot speed (multiplier on the bots' minimum move time and the trick pause)
 let speed = Math.max(1, store.get('speed', 1.6));   // 1 = fastest offered
-let coachOn = store.get('coach', false);           // the coach rates each of my cards after I play it (toast + review at the end)
+let coachOn = store.get('coachLive', false);       // live: the coach's cost in points on each of my cards (the review after a game works without it)
 let showQ = store.get('showQ', false);               // show the network's opinion (expected points, or % for a policy network) next to my options
 
 // anonymous game log (to train and test the KI on games with people): deal, seats, moves, result — no names, no IP
@@ -52,7 +52,7 @@ $('speed').onchange = () => { speed = +$('speed').value; store.set('speed', spee
 $('b-q').setAttribute('aria-pressed', showQ);
 $('b-q').onclick = () => { showQ = !showQ; store.set('showQ', showQ); $('b-q').setAttribute('aria-pressed', showQ); refresh(); };
 $('b-coach').setAttribute('aria-pressed', coachOn);
-$('b-coach').onclick = () => { coachOn = !coachOn; store.set('coach', coachOn); $('b-coach').setAttribute('aria-pressed', coachOn); toast(coachOn ? 'Coach an: bewertet jede deiner Karten, Auswertung am Spielende' : 'Coach aus'); refresh(); };
+$('b-coach').onclick = () => { coachOn = !coachOn; store.set('coachLive', coachOn); $('b-coach').setAttribute('aria-pressed', coachOn); toast(coachOn ? 'Coach an: jede spielbare Karte zeigt, wie viele Punkte sie kostet (★ = beste). Die Analyse am Spielende gibt es immer.' : 'Coach aus – die Analyse am Spielende gibt es trotzdem'); refresh(); };
 
 let mode = 'local';          // 'local' | 'host' | 'client'
 let G = null;                // match state (local / host)
@@ -63,8 +63,8 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=13');
-  worker.onmessage = e => ('coach' in e.data || 'q' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
+  worker = new Worker('worker.js?v=14');
+  worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
 // the worker failed (script error, stale cached file, hang): bots continue on the main thread with the simple rules
@@ -100,8 +100,9 @@ function gotQ(d) {
   if (!d.q && !gotQ.warned) { gotQ.warned = true; toast('KI-Tipps gibt es nur mit den Hausregeln'); }
   refresh();
 }
-// ---- coach: after I play a card, how many points it cost compared with the coach's best card. Values come from a
-// separate network trained on what each card is worth from the player's own view (it never sees the hidden cards) --
+// ---- coach: how many points each of my cards costs compared with the coach's best card. Values come from a separate
+// network trained on what each card is worth from the player's own view (it never sees the hidden cards). Live: a badge
+// on each card; after the game: a review of every card I played (replayed from the game record) --------------------
 let coachShown = { key: '', d: null }, coachAsked = { id: 0, key: '' };
 const coachKey = (v, legal) => JSON.stringify(['c', v.seat, v.hands[v.seat], v.trick, v.tricks.length, v.annBy, legal]);
 function wantCoach(v, legal) {
@@ -110,17 +111,51 @@ function wantCoach(v, legal) {
   if (worker && coachAsked.key !== key) { coachAsked = { id: ++botReq, key }; worker.postMessage({ id: coachAsked.id, view: v, legal, coachQ: true }); }
   return null;
 }
-function gotCoach(d) { if (d.id === coachAsked.id) coachShown = { key: coachAsked.key, d: d.coach }; }
-const COACH_LEVELS = [[0.25, 'gut', ''], [1, 'ungenau', '?!'], [2.5, 'Fehler', '?'], [1e9, 'grober Fehler', '??']];
+function gotCoach(d) { if (d.id === coachAsked.id) { coachShown = { key: coachAsked.key, d: d.coach }; if (coachOn) refresh(); } }
+// labels as in chess reviews; thresholds in expected points per game (the coach's costs were checked against real play-outs)
+const COACH_LEVELS = [[0.05, 'best', '★', 'Beste Karte'], [0.25, 'good', '✓', 'Gut'], [1, 'inacc', '?!', 'Ungenau'], [2.5, 'mistake', '?', 'Fehler'], [1e9, 'blunder', '??', 'Grober Fehler']];
 const coachLevel = c => COACH_LEVELS.find(([t]) => c < t);
-function coachRate(v, legal, a) {   // → {trick, card, better, cost} or null (not a card choice / values not there yet)
-  const d = coachShown.key === coachKey(v, legal) ? coachShown.d : null;
-  if (!d) return null;
-  const cards = legal.map((x, i) => i).filter(i => legal[i] < E.ACT_ANN);
-  if (cards.length < 2) return null;
-  const j = cards.find(i => legal[i] >> 1 === a >> 1); if (j === undefined) return null;
-  const b = cards.reduce((m, i) => d.vals[i] > d.vals[m] ? i : m, cards[0]);   // the coach's best card (its costs were checked against it)
-  return { trick: v.tricks.length + 1, card: E.actionName(legal[j], v), better: E.actionName(legal[b], v), cost: Math.max(0, d.vals[b] - d.vals[j]) };
+const ratedCards = legal => legal.map((x, i) => i).filter(i => legal[i] < E.ACT_ANN);   // the coach rates card play only (so far)
+function cardCosts(legal, vals) {   // card type → cost vs the coach's best card
+  const cards = ratedCards(legal), b = cards.reduce((m, i) => vals[i] > vals[m] ? i : m, cards[0]), out = {};
+  for (const i of cards) out[legal[i] >> 1] = Math.max(0, vals[b] - vals[i]);
+  return { costs: out, best: legal[b] };
+}
+function costBadge(c) {
+  const [, cls, sign] = coachLevel(c);
+  return `<small class="cq ${cls}" title="${coachLevel(c)[3]}: kostet im Schnitt ${c.toFixed(2)} Punkte">${c < 0.05 ? '★' : '−' + c.toFixed(1)}</small>`;
+}
+// the review: replay the game record, collect my card decisions, ask the worker for all of them at once
+let review = null;   // { id, rec, seat, items: [{v, legal, a, costs, best, cost}], at, all } or null
+function startReview(seat) {
+  if (!G || !G.rec || mode === 'client' || !worker || G.rules.withNines) { review = null; return; }
+  if (review && review.rec === G.rec && review.seat === seat) return;
+  const r = G.rec, s = E.newGame({ dealer: r.dealer, rules: G.rules, hands: r.hands, duty: r.duty, forced: r.forced, listLeft: r.listLeft });
+  const items = [];
+  for (const x of r.actions) {
+    if (x.s === seat && s.phase === 'play' && !(s.annAsk && s.annAsk.length) && x.a < E.ACT_ANN) {
+      const legal = E.legalActions(s);
+      if (ratedCards(legal).length > 1) items.push({ v: E.view(s, seat), all: s.hands.map(h => h.slice()), legal, a: x.a });
+    }
+    E.step(s, x.a);
+  }
+  review = { id: ++botReq, rec: r, seat, items, at: 0, ready: false };
+  if (items.length) worker.postMessage({ id: review.id, coachQ: true, view: items[0].v, items: items.map(it => ({ view: it.v, legal: it.legal })) });
+  else review.ready = true;
+}
+function gotReview(d) {
+  if (!review || d.id !== review.id) return;
+  if (!d.review) { review = null; return; }
+  review.items.forEach((it, k) => { const c = cardCosts(it.legal, d.review[k]); it.costs = c.costs; it.best = c.best; it.cost = c.costs[it.a >> 1] || 0; });
+  review.ready = true;
+  if (review.open) showReview(); else refresh();
+}
+function reviewSummary() {   // counts per label + total expected loss, or '' while the coach still works
+  if (!review || !review.ready || !review.items.length) return '';
+  const n = COACH_LEVELS.map(() => 0); let tot = 0;
+  for (const it of review.items) { n[COACH_LEVELS.indexOf(coachLevel(it.cost))]++; tot += it.cost; }
+  return COACH_LEVELS.map(([, cls, sign, word], k) => n[k] ? `<span class="cq ${cls}">${sign}</span> ${n[k]}× ${word}` : '').filter(Boolean).join(' · ') +
+    `<br>Zusammen ca. <b>${tot.toFixed(1)} Punkte</b> verschenkt (erwartete Punkte aus deiner Sicht – ohne Kartenglück)`;
 }
 const qFmt = q => qPct ? `${Math.round(q)} %` : `${q > 0 ? '+' : ''}${q.toFixed(1)}`;
 function qBadge(q, best) { return `<small class="qv${best ? ' best' : ''}" title="${qPct ? 'so wahrscheinlich würde die KI das spielen' : 'erwartete Punkte laut KI'}">${qFmt(q)}</small>`; }
@@ -136,7 +171,7 @@ function startMatch() {
 }
 function humanSeats() { return [0, 1, 2, 3].filter(q => G.cfg.seats[q] === 'human'); }
 function nextGame() {
-  G.gameNo++; G.coach = []; if (!G.sameDealer) G.dealer = (G.dealer + 1) % 4;
+  G.gameNo++; if (!G.sameDealer) G.dealer = (G.dealer + 1) % 4;
   G.sameDealer = false;
   let duty = [false, false, false, false], forced = -1;
   if (G.rules.dutySolo) {
@@ -239,12 +274,7 @@ function humanAct(a) {
   if (mode === 'client') { if (client.conn) client.conn.send({ t: 'act', a }); return; }
   if (G && G.cfg.seats[viewSeat] === 'human') {
     if (isAnn(a) && G.state.turn !== viewSeat) return arm(viewSeat, a);
-    const s = G.state, v = coachOn && a < E.ACT_ANN && s.phase === 'play' && s.turn === viewSeat ? E.view(s, viewSeat) : null;
-    const r = v && coachRate(v, E.legalActions(v), a), n = G.rec.actions.length;
-    if (r) (G.coach = G.coach || []).push(r);   // before act(): the last card ends the game and opens the result
     act(viewSeat, a);
-    if (r && G.rec.actions.length === n) G.coach.pop();   // the move wasn't taken
-    else if (r) toast(r.cost < 0.25 ? `Coach: ${r.card} – gut` : `Coach: ${r.card} – ${coachLevel(r.cost)[1]}, kostet ~${r.cost.toFixed(1)} P. Besser: ${r.better}`);
   }
 }
 
@@ -319,7 +349,8 @@ function render(v, meta) {
   const myTurn = v.phase !== 'done' && v.turn === me && !meta.pause && coverFor < 0 && meta.seats[me] !== 'remote' && !isBot(meta.seats[me]) || (mode === 'client' && v.phase !== 'done' && v.turn === me && !meta.pause);
   const legal = myTurn ? E.legalActions(v) : [];
   const qv = showQ && legal.length > 1 ? wantQ(v, legal) : null, qBest = qv ? Math.max(...qv) : 0;
-  if (coachOn && mode !== 'client' && v.phase === 'play' && legal.filter(a => a < E.ACT_ANN).length > 1) wantCoach(v, legal);   // ask now, rate when I play
+  const cd = coachOn && mode !== 'client' && v.phase === 'play' && ratedCards(legal).length > 1 ? wantCoach(v, legal) : null;
+  const cc = cd ? cardCosts(legal, cd.vals).costs : null;
   const qOf = a => { const i = legal.indexOf(a); return qv && i >= 0 ? qBadge(qv[i], qv[i] === qBest) : ''; };
   const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qFmt(qv[i])})` : ''; };
   const qCard = {}; if (qv) legal.forEach((a, i) => { if (a < 100) qCard[a >> 1] = qBadge(qv[i], qv[i] === qBest); });
@@ -363,7 +394,7 @@ function render(v, meta) {
   const w = Math.min(document.documentElement.clientWidth - 24, 760), cw = window.innerWidth <= 520 ? 50 : 62;
   const pad = parseFloat(getComputedStyle(H).paddingLeft) * 2 || 8;   // fanned designs keep room at the sides
   H.style.setProperty('--ov', Math.min(-4, Math.floor((w - 4 - pad - cw) / Math.max(1, hand.length - 1) - cw)) + 'px');
-  H.innerHTML = hand.map(id => cardHTML(id, v.phase === 'reserve' ? 'normal' : v.gameType, legalTypes.has(id >> 1) ? 'legal' : '', legalTypes.has(id >> 1) && qCard[id >> 1] || '')).join('');
+  H.innerHTML = hand.map(id => cardHTML(id, v.phase === 'reserve' ? 'normal' : v.gameType, legalTypes.has(id >> 1) ? 'legal' : '', (legalTypes.has(id >> 1) && qCard[id >> 1] || '') + (cc && cc[id >> 1] !== undefined ? costBadge(cc[id >> 1]) : ''))).join('');
   H.style.setProperty('--n', hand.length); [...H.children].forEach((c, i) => c.style.setProperty('--i', i));
   H.querySelectorAll('.card.legal').forEach(c => { c.tabIndex = 0; c.onclick = () => humanAct(+c.dataset.id); });
 
@@ -381,6 +412,7 @@ function showCover(meta) {
 }
 function showResult(v, meta) {  // stays open until the next game starts
   const r = v.result, nm = q => esc(meta.names[q]);
+  if (meta.host && meta.seats[meta.me] === 'human') startReview(meta.me);
   if (r.redeal) {
     openDialog(`<h2>Neu geben</h2><p>Niemand hat die Armut von ${nm(v.poor)} mitgenommen.</p><div class="row" style="justify-content:flex-end">
       ${meta.host ? '<button class="btn primary" id="r-next">Nächstes Spiel</button>' : '<span class="hint">Warte auf den Gastgeber…</span>'}</div>`);
@@ -393,19 +425,43 @@ function showResult(v, meta) {  // stays open until the next game starts
   const seats = [0, 1, 2, 3].map(q => `<tr><td>${nm(q)} <span class="badge ${v.team[q] ? 're' : 'ko'}">${v.team[q] ? 'Re' : 'Kontra'}</span></td><td class="${r.perSeat[q] >= 0 ? 'pos' : 'neg'}">${r.perSeat[q] > 0 ? '+' : ''}${r.perSeat[q]}</td></tr>`).join('');
   openDialog(`<h2>${wtxt}</h2><p class="hint">${gameLabel(v, meta)} · Augen: Re ${r.re} – Kontra ${r.ko}</p>
     <table class="res">${lines}</table><h3>Punkte</h3><table class="res">${seats}</table>${coachHTML()}
-    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="r-look">Stiche ansehen</button>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">${review && review.ready && review.items.length ? '<button class="btn" id="r-rev">Analyse</button>' : ''}<button class="btn" id="r-look">Stiche ansehen</button>
     ${meta.host ? '<button class="btn primary" id="r-next">Nächstes Spiel</button>' : '<span class="hint">Warte auf den Gastgeber…</span>'}</div>`);
   $('r-look').onclick = () => showTricks(v, meta);
+  if ($('r-rev')) $('r-rev').onclick = () => { review.open = true; userDialog = true; showReview(); };
   if (meta.host) $('r-next').onclick = () => { closeDialog(); nextGame(); };
 }
-function coachHTML() {   // my rated cards of this game (this device only, with the coach on)
-  const c = G && G.coach && G.coach.length ? G.coach : null;
-  if (!c) return '';
-  const tot = c.reduce((t, r) => t + r.cost, 0), bad = c.filter(r => r.cost >= 0.25);
-  const rows = c.map(r => { const [, word, sign] = coachLevel(r.cost);
-    return `<tr><td>Stich ${r.trick}: ${esc(r.card)}${sign ? ' ' + sign : ''}</td><td>${r.cost < 0.25 ? '✓' : `${word}, −${r.cost.toFixed(1)} · besser ${esc(r.better)}`}</td></tr>`; }).join('');
-  return `<h3>Coach</h3><p class="hint">${bad.length ? `${bad.length} von ${c.length} Karten kosteten zusammen ca. ${tot.toFixed(1)} Punkte` : `Alle ${c.length} Karten gut`} (erwartete Punkte aus deiner Sicht – ohne Kartenglück)</p><table class="res">${rows}</table>`;
+function coachHTML() {   // the coach's verdict on my cards of this game
+  if (!review || !review.items.length) return '';
+  return `<h3>Coach</h3><p class="hint">${review.ready ? reviewSummary() : 'Der Coach bewertet deine Karten…'}</p>`;
 }
+function showReview() {   // chess.com-style: step through my card decisions, every playable card with its cost
+  const R = review, it = R.items[R.at], meta = metaFor(R.seat), nm = q => esc(meta.names[q]), v = it.v, gt = v.gameType;
+  const strip = R.items.map((x, k) => { const [, cls, sign] = coachLevel(x.cost);
+    return `<button class="rv-chip cq ${cls}${k === R.at ? ' on' : ''}" data-k="${k}" title="Stich ${x.v.tricks.length + 1}: ${coachLevel(x.cost)[3]}">${x.v.tricks.length + 1}<b>${sign}</b></button>`; }).join('');
+  const [, cls, sign, word] = coachLevel(it.cost);
+  const table = v.trick.length ? v.trick.map((id, j) => `<div class="rv-c">${cardHTML(id, gt)}<span>${nm((v.leader + j) % 4)}</span></div>`).join('') : '<span class="hint">Du spielst aus.</span>';
+  const hand = E.sortHand(v.hands[R.seat], gt).map(id => { const c = it.costs[id >> 1];
+    return cardHTML(id, gt, (c === undefined ? 'off' : 'legal') + (id === it.a ? ' played' : ''), c === undefined ? '' : costBadge(c)); }).join('');
+  const others = R.all ? [1, 2, 3].map(r => (R.seat + r) % 4).map(q => `<div class="rv-row"><span class="rv-nm">${nm(q)}</span>${E.sortHand(it.all[q], gt).map(id => cardHTML(id, gt)).join('')}</div>`).join('') : '';
+  const prev = v.tricks.length ? v.tricks[v.tricks.length - 1] : null;
+  openDialog(`<h2>Analyse</h2><p class="hint">${reviewSummary()}</p><div class="rv-strip">${strip}</div>
+    <h3>Stich ${v.tricks.length + 1} · ${gameLabel(v, meta)}</h3>
+    ${prev ? `<p class="hint">Stich davor: ${prev.cards.map(id => esc(E.cardName(id))).join(' ')} → ${nm(prev.winner)}</p>` : ''}
+    <div class="rv-row rv-table">${table}</div>
+    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(E.actionName(it.a, v))}</b> – ${word}${it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(E.actionName(it.best, v))}</b>` : ''}</p>
+    <div class="rv-row rv-hand">${hand}</div>
+    <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
+    <p class="hint">Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.</p>
+    <div class="row" style="justify-content:space-between"><span><button class="btn" id="rv-prev"${R.at ? '' : ' disabled'}>←</button> <button class="btn" id="rv-next"${R.at < R.items.length - 1 ? '' : ' disabled'}>→</button></span>
+    <button class="btn primary" id="rv-close">Zurück</button></div>`);
+  const go = k => { R.at = Math.max(0, Math.min(R.items.length - 1, k)); showReview(); };
+  $('dlg').querySelectorAll('.rv-chip').forEach(b => { b.onclick = () => go(+b.dataset.k); });
+  $('rv-prev').onclick = () => go(R.at - 1); $('rv-next').onclick = () => go(R.at + 1);
+  $('rv-all').onchange = e => { R.all = e.target.checked; showReview(); };
+  $('rv-close').onclick = () => { R.open = false; userDialog = false; closeDialog(); refresh(); };
+}
+document.addEventListener('keydown', e => { if (review && review.open && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { review.at = Math.max(0, Math.min(review.items.length - 1, review.at + (e.key === 'ArrowLeft' ? -1 : 1))); showReview(); } });
 function showTricks(v, meta) {
   userDialog = true;
   const rows = v.tricks.map((t, i) => `<div class="row"><span class="hint" style="width:22px">${i + 1}</span>` +
