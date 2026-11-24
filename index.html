@@ -68,7 +68,7 @@ html[data-skin=stube] .btn{border:2px solid var(--text);box-shadow:0 2px 0 var(-
 .skins [data-s=stube]{background:linear-gradient(135deg,#f6ecd9 50%,#6a4c93 50%)}
 .skins [data-s=stamm]{background:linear-gradient(135deg,#7a4a2a 50%,#1f6a4a 50%)}
 select.mini{border-radius:999px;padding:4px 8px;font-size:13px}
-#b-q[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+#b-q[aria-pressed=true],#b-coach[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .qv{font:700 11px/1 var(--font);letter-spacing:-.3px;padding:2px 4px;border-radius:6px;background:var(--badge);color:var(--badge-ink);white-space:nowrap}
 .qv.best{background:var(--good);color:var(--bg)}
 .card .qv{position:absolute;left:3px;bottom:6px;z-index:2}
@@ -227,6 +227,7 @@ table.res td:last-child{text-align:right;font-variant-numeric:tabular-nums}
       <div class="skins" role="group" aria-label="Design"><button data-s="klar" title="Design: Klar"></button><button data-s="stube" title="Design: Stube"></button><button data-s="stamm" title="Design: Stammtisch"></button></div>
       <select class="mini" id="speed" title="Tempo der Bots"><option value="1">Schnell</option><option value="1.6">Normal</option><option value="2.5">Langsam</option></select>
       <button class="btn small" id="b-q" title="KI-Tipps: wie wahrscheinlich die KI jede deiner Möglichkeiten spielen würde (grün = ihre Wahl)">KI-Tipps</button>
+      <button class="btn small" id="b-coach" title="Coach: bewertet jede deiner Karten nach dem Ausspielen – wie viele Punkte sie im Schnitt kostet, ohne Kartenglück – und zeigt am Spielende die Auswertung">Coach</button>
     </div>
     <button class="btn small" id="b-scores">Spielliste</button>
     <button class="btn small" id="b-rules">Regeln</button>
@@ -251,8 +252,8 @@ table.res td:last-child{text-align:right;font-variant-numeric:tabular-nums}
 <div class="overlay" id="ov"><div class="dialog" id="dlg"></div></div>
 <div class="toast" id="toast"></div>
 
-<script>window.DOKO_VERSION = 12;</script>
-<script src="doko.js?v=12"></script>
-<script src="app.js?v=12"></script>
+<script>window.DOKO_VERSION = 13;</script>
+<script src="doko.js?v=13"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

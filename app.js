@@ -28,6 +28,7 @@ const rulesOf = c => Object.assign({}, c.ruleset === 'ddv' ? E.DEFAULT_RULES : E
 
 // display prefs: design (skin) and bot speed (multiplier on the bots' minimum move time and the trick pause)
 let speed = Math.max(1, store.get('speed', 1.6));   // 1 = fastest offered
+let coachOn = store.get('coach', false);           // the coach rates each of my cards after I play it (toast + review at the end)
 let showQ = store.get('showQ', false);               // show the network's opinion (expected points, or % for a policy network) next to my options
 
 // anonymous game log (to train and test the KI on games with people): deal, seats, moves, result — no names, no IP
@@ -50,6 +51,8 @@ $('speed').value = String(speed);
 $('speed').onchange = () => { speed = +$('speed').value; store.set('speed', speed); };
 $('b-q').setAttribute('aria-pressed', showQ);
 $('b-q').onclick = () => { showQ = !showQ; store.set('showQ', showQ); $('b-q').setAttribute('aria-pressed', showQ); refresh(); };
+$('b-coach').setAttribute('aria-pressed', coachOn);
+$('b-coach').onclick = () => { coachOn = !coachOn; store.set('coach', coachOn); $('b-coach').setAttribute('aria-pressed', coachOn); toast(coachOn ? 'Coach an: bewertet jede deiner Karten, Auswertung am Spielende' : 'Coach aus'); refresh(); };
 
 let mode = 'local';          // 'local' | 'host' | 'client'
 let G = null;                // match state (local / host)
@@ -60,8 +63,8 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=12');
-  worker.onmessage = e => ('q' in e.data ? gotQ(e.data) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
+  worker = new Worker('worker.js?v=13');
+  worker.onmessage = e => ('coach' in e.data || 'q' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
 // the worker failed (script error, stale cached file, hang): bots continue on the main thread with the simple rules
@@ -97,6 +100,28 @@ function gotQ(d) {
   if (!d.q && !gotQ.warned) { gotQ.warned = true; toast('KI-Tipps gibt es nur mit den Hausregeln'); }
   refresh();
 }
+// ---- coach: after I play a card, how many points it cost compared with the coach's best card. Values come from a
+// separate network trained on what each card is worth from the player's own view (it never sees the hidden cards) --
+let coachShown = { key: '', d: null }, coachAsked = { id: 0, key: '' };
+const coachKey = (v, legal) => JSON.stringify(['c', v.seat, v.hands[v.seat], v.trick, v.tricks.length, v.annBy, legal]);
+function wantCoach(v, legal) {
+  const key = coachKey(v, legal);
+  if (coachShown.key === key) return coachShown.d;
+  if (worker && coachAsked.key !== key) { coachAsked = { id: ++botReq, key }; worker.postMessage({ id: coachAsked.id, view: v, legal, coachQ: true }); }
+  return null;
+}
+function gotCoach(d) { if (d.id === coachAsked.id) coachShown = { key: coachAsked.key, d: d.coach }; }
+const COACH_LEVELS = [[0.25, 'gut', ''], [1, 'ungenau', '?!'], [2.5, 'Fehler', '?'], [1e9, 'grober Fehler', '??']];
+const coachLevel = c => COACH_LEVELS.find(([t]) => c < t);
+function coachRate(v, legal, a) {   // → {trick, card, better, cost} or null (not a card choice / values not there yet)
+  const d = coachShown.key === coachKey(v, legal) ? coachShown.d : null;
+  if (!d) return null;
+  const cards = legal.map((x, i) => i).filter(i => legal[i] < E.ACT_ANN);
+  if (cards.length < 2) return null;
+  const j = cards.find(i => legal[i] >> 1 === a >> 1); if (j === undefined) return null;
+  const b = cards.reduce((m, i) => d.vals[i] > d.vals[m] ? i : m, cards[0]);   // the coach's best card (its costs were checked against it)
+  return { trick: v.tricks.length + 1, card: E.actionName(legal[j], v), better: E.actionName(legal[b], v), cost: Math.max(0, d.vals[b] - d.vals[j]) };
+}
 const qFmt = q => qPct ? `${Math.round(q)} %` : `${q > 0 ? '+' : ''}${q.toFixed(1)}`;
 function qBadge(q, best) { return `<small class="qv${best ? ' best' : ''}" title="${qPct ? 'so wahrscheinlich würde die KI das spielen' : 'erwartete Punkte laut KI'}">${qFmt(q)}</small>`; }
 
@@ -111,7 +136,7 @@ function startMatch() {
 }
 function humanSeats() { return [0, 1, 2, 3].filter(q => G.cfg.seats[q] === 'human'); }
 function nextGame() {
-  G.gameNo++; if (!G.sameDealer) G.dealer = (G.dealer + 1) % 4;
+  G.gameNo++; G.coach = []; if (!G.sameDealer) G.dealer = (G.dealer + 1) % 4;
   G.sameDealer = false;
   let duty = [false, false, false, false], forced = -1;
   if (G.rules.dutySolo) {
@@ -212,7 +237,15 @@ function renderLocal() {
 }
 function humanAct(a) {
   if (mode === 'client') { if (client.conn) client.conn.send({ t: 'act', a }); return; }
-  if (G && G.cfg.seats[viewSeat] === 'human') { if (isAnn(a) && G.state.turn !== viewSeat) arm(viewSeat, a); else act(viewSeat, a); }
+  if (G && G.cfg.seats[viewSeat] === 'human') {
+    if (isAnn(a) && G.state.turn !== viewSeat) return arm(viewSeat, a);
+    const s = G.state, v = coachOn && a < E.ACT_ANN && s.phase === 'play' && s.turn === viewSeat ? E.view(s, viewSeat) : null;
+    const r = v && coachRate(v, E.legalActions(v), a), n = G.rec.actions.length;
+    if (r) (G.coach = G.coach || []).push(r);   // before act(): the last card ends the game and opens the result
+    act(viewSeat, a);
+    if (r && G.rec.actions.length === n) G.coach.pop();   // the move wasn't taken
+    else if (r) toast(r.cost < 0.25 ? `Coach: ${r.card} – gut` : `Coach: ${r.card} – ${coachLevel(r.cost)[1]}, kostet ~${r.cost.toFixed(1)} P. Besser: ${r.better}`);
+  }
 }
 
 // ---- rendering ------------------------------------------------------------------------------------
@@ -286,6 +319,7 @@ function render(v, meta) {
   const myTurn = v.phase !== 'done' && v.turn === me && !meta.pause && coverFor < 0 && meta.seats[me] !== 'remote' && !isBot(meta.seats[me]) || (mode === 'client' && v.phase !== 'done' && v.turn === me && !meta.pause);
   const legal = myTurn ? E.legalActions(v) : [];
   const qv = showQ && legal.length > 1 ? wantQ(v, legal) : null, qBest = qv ? Math.max(...qv) : 0;
+  if (coachOn && mode !== 'client' && v.phase === 'play' && legal.filter(a => a < E.ACT_ANN).length > 1) wantCoach(v, legal);   // ask now, rate when I play
   const qOf = a => { const i = legal.indexOf(a); return qv && i >= 0 ? qBadge(qv[i], qv[i] === qBest) : ''; };
   const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qFmt(qv[i])})` : ''; };
   const qCard = {}; if (qv) legal.forEach((a, i) => { if (a < 100) qCard[a >> 1] = qBadge(qv[i], qv[i] === qBest); });
@@ -358,11 +392,19 @@ function showResult(v, meta) {  // stays open until the next game starts
   const lines = r.lines.map(([l, p]) => `<tr><td>${esc(l)}</td><td class="${p > 0 ? 'pos' : 'neg'}">${p > 0 ? 'Re' : 'Kontra'} +${Math.abs(p)}</td></tr>`).join('');
   const seats = [0, 1, 2, 3].map(q => `<tr><td>${nm(q)} <span class="badge ${v.team[q] ? 're' : 'ko'}">${v.team[q] ? 'Re' : 'Kontra'}</span></td><td class="${r.perSeat[q] >= 0 ? 'pos' : 'neg'}">${r.perSeat[q] > 0 ? '+' : ''}${r.perSeat[q]}</td></tr>`).join('');
   openDialog(`<h2>${wtxt}</h2><p class="hint">${gameLabel(v, meta)} · Augen: Re ${r.re} – Kontra ${r.ko}</p>
-    <table class="res">${lines}</table><h3>Punkte</h3><table class="res">${seats}</table>
+    <table class="res">${lines}</table><h3>Punkte</h3><table class="res">${seats}</table>${coachHTML()}
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="r-look">Stiche ansehen</button>
     ${meta.host ? '<button class="btn primary" id="r-next">Nächstes Spiel</button>' : '<span class="hint">Warte auf den Gastgeber…</span>'}</div>`);
   $('r-look').onclick = () => showTricks(v, meta);
   if (meta.host) $('r-next').onclick = () => { closeDialog(); nextGame(); };
+}
+function coachHTML() {   // my rated cards of this game (this device only, with the coach on)
+  const c = G && G.coach && G.coach.length ? G.coach : null;
+  if (!c) return '';
+  const tot = c.reduce((t, r) => t + r.cost, 0), bad = c.filter(r => r.cost >= 0.25);
+  const rows = c.map(r => { const [, word, sign] = coachLevel(r.cost);
+    return `<tr><td>Stich ${r.trick}: ${esc(r.card)}${sign ? ' ' + sign : ''}</td><td>${r.cost < 0.25 ? '✓' : `${word}, −${r.cost.toFixed(1)} · besser ${esc(r.better)}`}</td></tr>`; }).join('');
+  return `<h3>Coach</h3><p class="hint">${bad.length ? `${bad.length} von ${c.length} Karten kosteten zusammen ca. ${tot.toFixed(1)} Punkte` : `Alle ${c.length} Karten gut`} (erwartete Punkte aus deiner Sicht – ohne Kartenglück)</p><table class="res">${rows}</table>`;
 }
 function showTricks(v, meta) {
   userDialog = true;
