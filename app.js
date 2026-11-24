@@ -63,7 +63,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=17');
+  worker = new Worker('worker.js?v=18');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -497,7 +497,7 @@ $('b-rules').onclick = () => userOpen(cfg.ruleset === 'ddv' ? `<h2>DDV-Turnierre
   <h3>Trumpf</h3><p>♥10 (Dulle) · ♣D ♠D ♥D ♦D · ♣B ♠B ♥B ♦B · ♦A ♦10 ♦K ♦9. Fehlfarben: A 10 K 9 (♥: A K 9). Gleiche Karten: die erste sticht.</p>
   <h3>Parteien</h3><p>Kreuz-Dame = <b>Re</b> (121 Augen nötig), sonst <b>Kontra</b> (120). Beide Kreuz-Damen: Hochzeit oder stille Hochzeit.</p>
   <h3>Wertung</h3><p>Gewonnen · gegen die Alten · unter 90/60/30/schwarz · Re/Kontra je 2 · Absagen · Doppelkopf, Fuchs, Karlchen. Solo ×3.</p>
-  <h3>Soli</h3><p>Damen, Buben, Fleischlos, Farbsoli. Der Solist spielt aus.</p>` : `<h2>Unsere Hausregeln</h2>
+  <h3>Soli</h3><p>Damen, Buben, Fleischlos, Farbsoli. Ohne Pflichtsolo-Liste ist jedes Solo ein Lustsolo: die normale Vorhand spielt aus (TSR 4.3.1).</p>` : `<h2>Unsere Hausregeln</h2>
   <h3>Blatt</h3><p><b>Ohne Neunen</b> (40 Karten, je 10). Trumpf: ♥10 · ♣D ♠D ♥D ♦D · ♣B ♠B ♥B ♦B · ♦A ♦10 ♦K. <b>Die zweite Dulle sticht die erste</b> (auch im letzten Stich).</p>
   <h3>Schweinchen</h3><p>Wer beide ♦A hat, hat die höchsten Trümpfe – angesagt erst beim Ausspielen. Nur wenn kein Solo gespielt wird.</p>
   <h3>Vorbehalte</h3><p>Solo vor Armut vor Hochzeit.
