@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=24');
+  worker = new Worker('worker.js?v=25');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -181,8 +181,8 @@ function factsHTML(f, seat, names) {
 // prediction heads (models/predict, rl/predict_heads.py): probabilities from my own view for what is still open; the
 // certain facts come first (a card nobody else can have → 0 %, the only possible holder → 100 %)
 const pct = x => `${Math.round(100 * x)} %`;
-function predOf(p, f, seat) {
-  const rel = q => (q - seat + 4) % 4;
+function predOf(p0, f, seat) {   // only facts say 0 % or 100 %; a head's estimate stays within 1–99 %
+  const rel = q => (q - seat + 4) % 4, p = p0.map(z => Math.min(0.99, Math.max(0.01, z)));
   const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : p[6 + (rel(q) - 1) * 24 + t];
   const trump = q => f.void[q].includes(4) ? 0 : f.trumps.some(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q) ? 1 : p[3 + rel(q) - 1];
   return { team: q => p[rel(q) - 1], trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107) };
@@ -197,17 +197,41 @@ function predHTML(p, f, seat, names) {
   L.push(`<b>Deine Partei gewinnt:</b> ${pct(P.game)} · holt ≥ 90 Augen: ${pct(P.augen[0])} · Gegner unter 90: ${pct(P.augen[1])}`);
   return L.map(x => `<div class="fx">${x}</div>`).join('');
 }
-// "why" for a card that cost something: what the trick odds and the cards still out say (facts first, then the heads)
-function whyHTML(it, f, p, seat, names) {
+// announcements and the Augen heads: what each one needs, as the heads' chance from my view (before announcing)
+const ANN_NEED = { 1: ['Sieg', 'game'], 2: ['Gegner unter 90', 1], 3: ['Gegner unter 60', 2], 4: ['Gegner unter 30', 3] };
+function annChanceHTML(p, legal) {
+  const P = i => i === 'game' ? p[102] : p[103 + i];
+  const xs = legal.filter(isAnn).map(a => ANN_NEED[a - E.ACT_ANN]).filter(Boolean);
+  return xs.length ? `<small class="hint cg-hint">Chancen aus deiner Sicht (vor der Ansage): ${xs.map(([w, i]) => `${w} ${pct(P(i))}`).join(' · ')}</small>` : '';
+}
+const cardPts = id => E.PTS[(id >> 1) % 6];
+function partnerTxt(q, f, P, seat) {   // "sicher dein Partner" / "wohl Gegner (70 %)" — facts first
+  if (f.team[q] !== null && f.team[seat] !== null) return f.team[q] === f.team[seat] ? 'sicher dein Partner' : 'sicher Gegner';
+  if (!P || f.team[seat] === null) return '';
+  const t = P.team(q); return t >= 0.5 ? `wohl dein Partner (${pct(t)})` : `wohl Gegner (${pct(1 - t)})`;
+}
+// "why" for a card that cost something: who holds the trick and its points, the trick odds of my card vs the coach's,
+// points given away or smeared, and higher cards still out (facts first, then the heads)
+function whyHTML(it, v, f, p, seat, names) {
   if (it.type !== 'card' || it.forced || it.cost < 0.25 || it.best === undefined || (it.best >> 1) === (it.a >> 1)) return '';
   const P = p ? predOf(p, f, seat) : null, a = it.a >> 1, b = it.best >> 1, L = [];
-  if (P && P.trick(b) - P.trick(a) >= 0.15) L.push(`Mit ${E.cardName(it.best)} gewinnt deine Partei diesen Stich zu ${pct(P.trick(b))}, mit ${E.cardName(it.a)} nur zu ${pct(P.trick(a))}.`);
-  else if (P && P.trick(a) - P.trick(b) >= 0.15) L.push(`Mit ${E.cardName(it.a)} gewinnt deine Partei diesen Stich eher (${pct(P.trick(a))} statt ${pct(P.trick(b))}) – der Vorteil von ${E.cardName(it.best)} kommt also später im Spiel (z. B. eine hohe Karte behalten).`);
+  if (v.trick.length) {
+    var w = (v.leader + E.trickWinnerIdx(v, v.trick, v.tricks.length === 9)) % 4; const pts = v.trick.reduce((x, id) => x + cardPts(id), 0), pt = partnerTxt(w, f, P, seat);
+    L.push(`Den Stich (bisher ${pts} Augen) hält gerade ${esc(names[w])}${pt ? ` – ${pt}` : ''}.`);
+  }
+  const toPartner = v.trick.length > 0 && w !== seat && (f.team[w] !== null && f.team[seat] !== null ? f.team[w] === f.team[seat] : P && f.team[seat] !== null && P.team(w) >= 0.5);
+  if (P && cardPts(it.best) - cardPts(it.a) >= 7 && P.trick(b) >= 0.65)
+    L.push(`${toPartner ? 'Schmieren: ' : ''}${E.cardName(it.best)} bringt ${cardPts(it.best)} Augen in einen Stich, den deine Partei zu ${pct(P.trick(b))} gewinnt (${E.cardName(it.a)} nur ${cardPts(it.a)}).`);
+  else if (P && cardPts(it.a) - cardPts(it.best) >= 7 && P.trick(a) < 0.4)
+    L.push(`${E.cardName(it.a)} gibt ${cardPts(it.a)} Augen in einen Stich, den deine Partei nur zu ${pct(P.trick(a))} gewinnt – ${E.cardName(it.best)} kostet ${cardPts(it.best)}.`);
+  else if (P && P.trick(b) - P.trick(a) >= 0.15) L.push(`Mit ${E.cardName(it.best)} gewinnt deine Partei diesen Stich zu ${pct(P.trick(b))}, mit ${E.cardName(it.a)} nur zu ${pct(P.trick(a))}.`);
+  else if (P && P.trick(a) - P.trick(b) >= 0.15) L.push(`Mit ${E.cardName(it.a)} gewinnt deine Partei diesen Stich eher (${pct(P.trick(a))} statt ${pct(P.trick(b))}) – der Vorteil von ${E.cardName(it.best)} liegt also später im Spiel.`);
   const k = f.cls[a], order = k === 4 ? f.trumps : [...Array(24).keys()].filter(t => f.cls[t] === k).sort((x, y) => x % 6 - y % 6);
   const higher = order.slice(0, Math.max(0, order.indexOf(a))).filter(t => f.unseen[t] > 0);
   const where = t => { if (f.holders[t].length === 1) return ` (sicher bei ${esc(names[f.holders[t][0]])})`;
-    if (!P) return ''; const q = f.holders[t].reduce((m, x) => P.card(x, t) > P.card(m, t) ? x : m, f.holders[t][0]); return ` (wohl bei ${esc(names[q])}, ${pct(P.card(q, t))})`; };
-  if (higher.length && (!P || P.trick(a) < 0.5)) L.push(`Höher als ${E.cardName(it.a)} ist noch draußen: ${higher.slice(0, 3).map(t => E.cardName(t * 2) + where(t)).join(', ')}.`);
+    if (!P) return ''; const q = f.holders[t].reduce((m, x) => P.card(x, t) > P.card(m, t) ? x : m, f.holders[t][0]); const c = P.card(q, t); return ` (${c >= 0.5 ? 'wohl' : 'am ehesten'} bei ${esc(names[q])}, ${pct(c)})`; };
+  const winsNow = v.trick.length < 3 && (!v.trick.length || E.trickWinnerIdx(v, [...v.trick, it.a], v.tricks.length === 9) === v.trick.length);   // could still be overtaken
+  if (higher.length && winsNow && (!P || P.trick(a) < 0.5)) L.push(`Höher als ${E.cardName(it.a)} ist noch draußen: ${higher.slice(0, 3).map(t => E.cardName(t * 2) + where(t)).join(', ')}.`);
   return L.length ? `<p class="hint rv-why"><b>Warum?</b> ${L.join(' ')}</p>` : '';
 }
 // the review: replay the game record — my Vorbehalt, one step per trick (my card), and announcements (made, or the
@@ -482,11 +506,13 @@ function render(v, meta) {
     if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}${coachTxt(a)}</option>`).join('')}</select>`;
     if (cr && cr.costs[legal[0]].g !== null) acts += `<small class="hint cg-hint">Coach: Punkte für die ganze Liste = dieses Spiel („Spiel“) + Rest der Liste („Rest“: ein Solo jetzt erfüllt das Pflichtsolo, ein offenes ist später etwas wert)</small>`;
   } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
-  else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
+  else if (myTurn && v.phase === 'play') { for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
+    if (cd && cd.pred && legal.some(isAnn)) acts += annChanceHTML(cd.pred, legal); }
   else if (v.phase === 'play' && coverFor < 0 && (mode === 'client' || meta.seats[me] === 'human')) {   // not my turn: queue it
     const a = annOption(v, me), on = a && meta.armed === a;
     if (a) acts += `<button class="btn${on ? ' armed' : ''}" data-a="${a}" title="${on ? 'angemeldet – nochmal tippen zum Zurücknehmen' : 'wird vor der nächsten Karte angesagt'}">${E.actionName(a, Object.assign({}, v, { turn: me }))}${on ? ' ✓' : ''}${coachOf(a)}</button>`;
     if (on) status += ` <small>– ${E.actionName(a, Object.assign({}, v, { turn: me }))} kommt vor der nächsten Karte</small>`;
+    if (a && cd && cd.pred && legalAsk) acts += annChanceHTML(cd.pred, legalAsk);
   }
   $('status').innerHTML = status;
   const canAck = meta.ack && (mode === 'client' || meta.seats[me] === 'human');
@@ -591,7 +617,8 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     ${table ? `<div class="rv-row rv-table">${table}</div>` : ''}
     <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? it.type === 'pov' ? 'keine Wahl (alle Trümpfe müssen abgegeben werden)' : 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}</p>
     ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
-    ${it.type === 'card' && v.facts ? whyHTML(it, v.facts, it.pred, R.seat, meta.names) : ''}
+    ${it.type === 'card' && v.facts ? whyHTML(it, v, v.facts, it.pred, R.seat, meta.names) : ''}
+    ${it.type === 'ann' && it.pred ? `<p class="hint">${annChanceHTML(it.pred, it.legal)}</p>` : ''}
     ${it.type === 'card' && it.pred && !it.forced ? `<p class="hint">Stich für deine Partei: ${[...new Set(ratedCards(it.legal).map(i => it.legal[i] >> 1))].sort((x, y) => it.pred[78 + y] - it.pred[78 + x]).map(t => `${E.cardName(t * 2)} ${pct(it.pred[78 + t])}`).join(' · ')}</p>` : ''}
     ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
     <div class="rv-row rv-hand">${hand}</div>
