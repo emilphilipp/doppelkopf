@@ -63,7 +63,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=20');
+  worker = new Worker('worker.js?v=21');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -129,13 +129,14 @@ function annCosts(legal, vals) {
   const out = { [E.ACT_ANN]: best - vNo }; legal.forEach((a, i) => { if (isAnn(a)) out[a] = best - vals[i]; });
   return { costs: out, best: bestA };
 }
-// Vorbehalte: cost vs the coach's best option for the whole list (c), and this game alone relative to that option (g:
-// positive = better in this game) — they differ when a solo uses up the Pflichtsolo
-// (until 25 Nov the whole-list value came from the critic, which undervalues a good Pflichtsolo by ~6 points; until
-// the list part is rebuilt from simulated lists, only this game is rated: d.game)
+// Vorbehalte: cost vs the coach's best option for the whole list (c), split into this game (g) and the rest of the
+// list (r), both relative to that option (positive = better than it) — they differ when a solo uses up the Pflichtsolo.
+// The whole-list values are learned from this game's points + the value of the list situation afterwards, measured on
+// simulated lists (rl/list_value.py; until 25 Nov they came from the critic, which undervalued a good Pflichtsolo).
 function resvCosts(legal, d) {
-  const v = d.game || d.vals, b = v.reduce((m, x, i) => x > v[m] ? i : m, 0), out = {};
-  legal.forEach((a, i) => { out[a] = { c: Math.max(0, v[b] - v[i]), g: null }; });
+  const b = d.vals.reduce((m, x, i) => x > d.vals[m] ? i : m, 0), out = {};
+  legal.forEach((a, i) => { const g = d.game ? d.game[i] - d.game[b] : null;
+    out[a] = { c: Math.max(0, d.vals[b] - d.vals[i]), g, r: g === null ? null : d.vals[i] - d.vals[b] - g }; });
   return { costs: out, best: legal[b] };
 }
 function costBadge(c) {
@@ -143,7 +144,7 @@ function costBadge(c) {
   return `<small class="cq ${cls}" title="${coachLevel(c)[3]}: kostet im Schnitt ${c.toFixed(2)} Punkte">${c < 0.05 ? '★' : '−' + c.toFixed(1)}</small>`;
 }
 const fmtG = g => `${g >= 0.05 ? '+' : g <= -0.05 ? '−' : '±'}${Math.abs(g).toFixed(1)}`;
-const gameTag = g => g === null || g === undefined ? '' : `<small class="cg" title="nur dieses Spiel, ohne den Rest der Liste">Spiel ${fmtG(g)}</small>`;
+const gameTag = (g, r) => g === null || g === undefined ? '' : `<small class="cg" title="nur dieses Spiel">Spiel ${fmtG(g)}</small><small class="cg" title="Rest der Liste: Pflichtsolo erfüllt oder noch offen">Rest ${fmtG(r)}</small>`;
 function annBadge(costs, a) {   // ★ +gain when announcing is the coach's choice, else what it costs
   const c = costs[a];
   return c < 0.05 && costs[E.ACT_ANN] >= 0.05 ? `<small class="cq best" title="Beste Wahl: bringt im Schnitt ${costs[E.ACT_ANN].toFixed(2)} Punkte">★ +${costs[E.ACT_ANN].toFixed(1)}</small>` : costBadge(c);
@@ -393,8 +394,8 @@ function render(v, meta) {
   const cc = cd && myTurn && v.phase === 'play' && ratedCards(legal).length > 1 ? cardCosts(legal, cd.vals).costs : null;
   const ca = cd && v.phase === 'play' ? myTurn ? legal.some(isAnn) && annCosts(legal, cd.vals).costs : annCosts(legalAsk, cd.vals).costs : null;
   const cr = cd && myTurn && v.phase === 'reserve' ? resvCosts(legal, cd) : null;
-  const coachOf = a => ca && ca[a] !== undefined ? annBadge(ca, a) : cr ? costBadge(cr.costs[a].c) + gameTag(cr.costs[a].g) : '';
-  const coachTxt = a => cr ? ` · ${cr.costs[a].c < 0.05 ? '★' : '−' + cr.costs[a].c.toFixed(1)}${cr.costs[a].g === null ? '' : ` (dieses Spiel ${fmtG(cr.costs[a].g)})`}` : '';
+  const coachOf = a => ca && ca[a] !== undefined ? annBadge(ca, a) : cr ? costBadge(cr.costs[a].c) + gameTag(cr.costs[a].g, cr.costs[a].r) : '';
+  const coachTxt = a => cr ? ` · ${cr.costs[a].c < 0.05 ? '★' : '−' + cr.costs[a].c.toFixed(1)}${cr.costs[a].g === null ? '' : ` (Spiel ${fmtG(cr.costs[a].g)}, Rest ${fmtG(cr.costs[a].r)})`}` : '';
   const qOf = a => { const i = legal.indexOf(a); return qv && i >= 0 ? qBadge(qv[i], qv[i] === qBest) : ''; };
   const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qFmt(qv[i])})` : ''; };
   const qCard = {}; if (qv) legal.forEach((a, i) => { if (a < 100) qCard[a >> 1] = qBadge(qv[i], qv[i] === qBest); });
@@ -414,7 +415,7 @@ function render(v, meta) {
     for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
     const soli = legal.filter(a => E.isSoloResv(E.RESV[a - E.ACT_RES]));
     if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}${coachTxt(a)}</option>`).join('')}</select>`;
-    if (cr) acts += `<small class="hint cg-hint">Coach: Punkte nur für dieses Spiel – der Wert für den Rest der Liste (Pflichtsolo erfüllt oder noch offen) kommt bald</small>`;
+    if (cr && cr.costs[legal[0]].g !== null) acts += `<small class="hint cg-hint">Coach: Punkte für die ganze Liste = dieses Spiel („Spiel“) + Rest der Liste („Rest“: ein Solo jetzt erfüllt das Pflichtsolo, ein offenes ist später etwas wert)</small>`;
   } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
   else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
   else if (v.phase === 'play' && coverFor < 0 && (mode === 'client' || meta.seats[me] === 'human')) {   // not my turn: queue it
@@ -497,7 +498,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
   let opts = '';
   if (it.type === 'resv') {
     const order = Object.keys(it.costs).map(Number).sort((a, b) => it.costs[a].c - it.costs[b].c);
-    opts = order.filter((a, k) => k < 6 || a === it.a).map(a => `<div class="rv-opt${a === it.a ? ' mine' : ''}">${costBadge(it.costs[a].c)}${gameTag(it.costs[a].g)} ${esc(E.actionName(a, v))}${a === it.a ? ' <small>(du)</small>' : ''}</div>`).join('');
+    opts = order.filter((a, k) => k < 6 || a === it.a).map(a => `<div class="rv-opt${a === it.a ? ' mine' : ''}">${costBadge(it.costs[a].c)}${gameTag(it.costs[a].g, it.costs[a].r)} ${esc(E.actionName(a, v))}${a === it.a ? ' <small>(du)</small>' : ''}</div>`).join('');
   } else if (it.type === 'ann') {
     opts = Object.keys(it.costs).map(Number).sort((a, b) => it.costs[a] - it.costs[b]).map(a => `<div class="rv-opt${a === it.a ? ' mine' : ''}">${costBadge(it.costs[a])} ${a === E.ACT_ANN ? 'Keine Ansage' : esc(E.actionName(a, v))}${a === it.a ? ' <small>(du)</small>' : ''}</div>`).join('');
   }
@@ -508,7 +509,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
   const done = it.type === 'card' ? R.tricks[v.tricks.length] : null;   // how this trick ended
   const foot = it.type === 'card' ? 'Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.'
     : it.type === 'ann' ? 'Ansagen: was die Ansage jetzt im Schnitt bringt oder kostet (Punkte aus deiner Sicht, ohne Kartenglück). Gezeigt werden deine Ansagen und der erste Moment, in dem der Coach selbst angesagt hätte.'
-    : 'Vorbehalt: Punkte nur für dieses Spiel (im Vergleich zur besten Wahl ★). Was ein jetzt erfülltes oder noch offenes Pflichtsolo für den Rest der Liste bedeutet, wird noch nicht eingerechnet.';
+    : 'Vorbehalt: Punkte für die ganze Liste im Vergleich zur besten Wahl (★) = dieses Spiel („Spiel“) + Rest der Liste („Rest“). Ein Solo jetzt erfüllt dein Pflichtsolo; ein offenes Pflichtsolo ist später etwas wert (du kannst auf ein gutes Blatt warten), kurz vor Listenende droht die Vorführung.';
   openDialog(`<h2>Analyse</h2><p class="hint">${reviewSummary()}</p><div class="rv-strip">${strip}</div>
     <h3>${what(it)} · ${it.type === 'resv' ? 'Vorbehalte' : gameLabel(v, meta)}</h3>${info ? `<p class="hint">${info}</p>` : ''}
     ${table ? `<div class="rv-row rv-table">${table}</div>` : ''}
