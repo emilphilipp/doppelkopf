@@ -52,6 +52,7 @@ $('speed').onchange = () => { speed = +$('speed').value; store.set('speed', spee
 $('b-q').setAttribute('aria-pressed', showQ);
 $('b-q').onclick = () => { showQ = !showQ; store.set('showQ', showQ); $('b-q').setAttribute('aria-pressed', showQ); refresh(); };
 $('b-coach').setAttribute('aria-pressed', coachOn);
+$('facts').open = store.get('factsOpen', false); $('facts').ontoggle = () => store.set('factsOpen', $('facts').open);
 $('b-coach').onclick = () => { coachOn = !coachOn; store.set('coachLive', coachOn); $('b-coach').setAttribute('aria-pressed', coachOn); toast(coachOn ? 'Coach an: jede spielbare Karte zeigt, wie viele Punkte sie kostet (★ = beste). Die Analyse am Spielende gibt es immer.' : 'Coach aus – die Analyse am Spielende gibt es trotzdem'); refresh(); };
 
 let mode = 'local';          // 'local' | 'host' | 'client'
@@ -63,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=22');
+  worker = new Worker('worker.js?v=23');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -156,6 +157,26 @@ const gameTag = (g, r) => g === null || g === undefined ? '' : `<small class="cg
 function annBadge(costs, a) {   // ★ +gain when announcing is the coach's choice, else what it costs
   const c = costs[a];
   return c < 0.05 && costs[E.ACT_ANN] >= 0.05 ? `<small class="cq best" title="Beste Wahl: bringt im Schnitt ${costs[E.ACT_ANN].toFixed(2)} Punkte">★ +${costs[E.ACT_ANN].toFixed(1)}</small>` : costBadge(c);
+}
+// certain facts (dokors/src/facts.rs, in every view): only what follows from the play so far and my own cards — teams
+// that are public, who can't follow a suit, the cards still out (and who must have them), card points won
+const CLS_DE = ['♣', '♠', '♥', '♦', 'Trumpf'];
+function factsHTML(f, seat, names) {
+  const nm = q => q === seat ? 'Du' : esc(names[q]), seats = [0, 1, 2, 3], others = [1, 2, 3].map(r => (seat + r) % 4);
+  const out = t => Array(Math.max(0, f.unseen[t])).fill(E.cardName(t * 2)), L = [];
+  const side = p => seats.filter(q => f.team[q] === p), open = seats.filter(q => f.team[q] === null);
+  L.push('<b>Parteien:</b> ' + [side(1).length ? `Re: ${side(1).map(nm).join(', ')}` : '', side(0).length ? `Kontra: ${side(0).map(nm).join(', ')}` : '',
+    open.length ? `noch offen: ${open.map(nm).join(', ')}` : ''].filter(Boolean).join(' · '));
+  const vd = others.filter(q => f.void[q].length).map(q => `${nm(q)}: kein ${f.void[q].map(k => CLS_DE[k]).join(', kein ')}`);
+  if (vd.length) L.push(`<b>Kann nicht bedienen:</b> ${vd.join(' · ')}`);
+  const tr = f.trumps.flatMap(out), suits = [0, 1, 2, 3].map(k => [...Array(24).keys()].filter(t => f.cls[t] === k).flatMap(out)).map((c, k) => c.length ? `${CLS_DE[k]} ${c.length}${c.some(x => /A|10/.test(x)) ? ` (${c.filter(x => /A|10/.test(x)).map(x => x.slice(1)).join(', ')})` : ''}` : '').filter(Boolean);
+  const trTxt = f.trumps.length ? [`${tr.length} Trumpf${tr.length ? ` (${tr.slice(0, 5).join(' ')}${tr.length > 5 ? ' …' : ''})` : ''}`] : [];   // a Fleischloser has none
+  L.push(`<b>Noch draußen:</b> ${trTxt.concat(suits).join(' · ') || 'nichts'}`);
+  const sure = others.map(q => [q, [...Array(24).keys()].filter(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q).flatMap(out)]).filter(([, c]) => c.length);
+  if (sure.length) L.push(`<b>Sicher:</b> ${sure.map(([q, c]) => `${nm(q)} hat ${c.join(' ')}`).join(' · ')}`);
+  const pts = open.length ? seats.filter(q => f.won[q]).map(q => `${nm(q)} ${f.won[q]}`) : [[1, 'Re'], [0, 'Kontra']].map(([p, w]) => `${w} ${side(p).reduce((a, q) => a + f.won[q], 0)}`);
+  if (pts.length) L.push(`<b>Augen:</b> ${pts.join(' · ')}`);
+  return L.map(x => `<div class="fx">${x}</div>`).join('');
 }
 // the review: replay the game record — my Vorbehalt, one step per trick (my card), and announcements (made, or the
 // coach would have made one) — and ask the worker for all real choices at once
@@ -456,6 +477,8 @@ function render(v, meta) {
   H.innerHTML = hand.map(id => cardHTML(id, v.phase === 'reserve' ? 'normal' : v.gameType, legalTypes.has(id >> 1) ? 'legal' : '', (legalTypes.has(id >> 1) && qCard[id >> 1] || '') + (cc && cc[id >> 1] !== undefined ? costBadge(cc[id >> 1]) : ''))).join('');
   H.style.setProperty('--n', hand.length); [...H.children].forEach((c, i) => c.style.setProperty('--i', i));
   H.querySelectorAll('.card.legal').forEach(c => { c.tabIndex = 0; c.onclick = () => humanAct(+c.dataset.id); });
+  const fx = $('facts'), showFx = coachOn && v.phase === 'play' && !!v.facts && coverFor < 0;   // live with the coach on; closed by default (counting is part of the game)
+  fx.hidden = !showFx; if (showFx) $('facts-body').innerHTML = factsHTML(v.facts, me, meta.names);
 
   // overlays driven by the game (not over a dialog the user opened)
   if (userDialog) return;
@@ -538,6 +561,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
     ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
     <div class="rv-row rv-hand">${hand}</div>
+    ${cardItem && v.facts ? `<details class="rv-facts" id="rv-facts"${R.facts !== false ? ' open' : ''}><summary>Sicher bekannt (vor deiner Karte)</summary>${factsHTML(v.facts, R.seat, meta.names)}</details>` : ''}
     <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
     <p class="hint">${foot}</p>
     <div class="row" style="justify-content:space-between"><span><button class="btn" id="rv-prev"${R.at ? '' : ' disabled'}>←</button> <button class="btn" id="rv-next"${R.at < R.items.length - 1 ? '' : ' disabled'}>→</button></span>
@@ -546,6 +570,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
   $('dlg').querySelectorAll('.rv-chip').forEach(b => { b.onclick = () => go(+b.dataset.k); });
   $('rv-prev').onclick = () => go(R.at - 1); $('rv-next').onclick = () => go(R.at + 1);
   $('rv-all').onchange = e => { R.all = e.target.checked; showReview(); };
+  if ($('rv-facts')) $('rv-facts').ontoggle = () => { R.facts = $('rv-facts').open; };
   $('rv-close').onclick = () => { R.open = false; userDialog = false; closeDialog(); refresh(); };
 }
 document.addEventListener('keydown', e => { if (review && review.open && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { review.at = Math.max(0, Math.min(review.items.length - 1, review.at + (e.key === 'ArrowLeft' ? -1 : 1))); showReview(); } });
