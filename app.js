@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=25');
+  worker = new Worker('worker.js?v=26');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -230,6 +230,10 @@ function whyHTML(it, v, f, p, seat, names) {
   const higher = order.slice(0, Math.max(0, order.indexOf(a))).filter(t => f.unseen[t] > 0);
   const where = t => { if (f.holders[t].length === 1) return ` (sicher bei ${esc(names[f.holders[t][0]])})`;
     if (!P) return ''; const q = f.holders[t].reduce((m, x) => P.card(x, t) > P.card(m, t) ? x : m, f.holders[t][0]); const c = P.card(q, t); return ` (${c >= 0.5 ? 'wohl' : 'am ehesten'} bei ${esc(names[q])}, ${pct(c)})`; };
+  // partner signal: in a normal game the ♣D shows everyone that its player is Re (while that is not public yet)
+  const CQ = E.T(E.C, E.Q), secret = v.gameType === 'normal' && v.known && v.known[seat] === null;
+  if (secret && b === CQ && a !== CQ) L.push(`Mit ${E.cardName(it.best)} hättest du gezeigt, dass du Re bist – dein Partner weiß es dann.`);
+  else if (secret && a === CQ && b !== CQ) L.push(`Mit ${E.cardName(it.a)} zeigst du allen, dass du Re bist – auch den Gegnern.`);
   const winsNow = v.trick.length < 3 && (!v.trick.length || E.trickWinnerIdx(v, [...v.trick, it.a], v.tricks.length === 9) === v.trick.length);   // could still be overtaken
   if (higher.length && winsNow && (!P || P.trick(a) < 0.5)) L.push(`Höher als ${E.cardName(it.a)} ist noch draußen: ${higher.slice(0, 3).map(t => E.cardName(t * 2) + where(t)).join(', ')}.`);
   return L.length ? `<p class="hint rv-why"><b>Warum?</b> ${L.join(' ')}</p>` : '';
