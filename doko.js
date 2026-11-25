@@ -110,12 +110,13 @@ async function loadNetUrl(base, query = '') {
 function loadNetFile(path) { const fs = require('fs'); return loadNet(JSON.parse(fs.readFileSync(path + '.json', 'utf8')), fs.readFileSync(path + '.bin')); }
 const qValues = (v, legal, net = 0) => call('q', { v: bare(v), legal, net });   // expected points per legal action
 const sampleDeal = (v, seed) => call('sampleDeal', { v: bare(v), seed });
+const netOut = (v, net) => call('out', { v: bare(v), net });   // all outputs of a network for the view's seat (prediction heads)
 
 const api = { SUITS, SUIT_SYM, SUIT_DE, RANKS, RANK_DE, PTS, C, S, H, D, A, TEN, K, Q, J, NINE, T, ALL_SOLI, RESV, RESV_DE, ANN, ANN_DE,
   ACT_ANN, ACT_RES, ACT_POV, isSoloResv, isWeddingResv, cardName, actionName, sortHand, rng, shuffle, deck,
   newGame, step, legalActions, view, score, trickWinnerIdx, clone, BOTS, bot,
   randomBot: bot('random'), heuristicBot: bot('heuristic'), uctBot: o => bot('uct', o),
-  loadNet, loadNetUrl, loadNetFile, qValues, sampleDeal, TABLES: null, HOUSE_RULES: null, DEFAULT_RULES: null };
+  loadNet, loadNetUrl, loadNetFile, qValues, sampleDeal, netOut, TABLES: null, HOUSE_RULES: null, DEFAULT_RULES: null };
 
 if (isNode) {
   boot(new WebAssembly.Module(require('fs').readFileSync(require('path').join(__dirname, 'dokors.wasm'))));

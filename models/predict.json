@@ -1,0 +1,124 @@
+{
+ "arch": "multi",
+ "dtype": "f16",
+ "obsDim": 502,
+ "nAct": 107,
+ "hidden": 512,
+ "bodyLayers": 7,
+ "layout": [
+  {
+   "name": "scale",
+   "shape": [
+    502
+   ],
+   "offset": 0
+  },
+  {
+   "name": "w0",
+   "shape": [
+    512,
+    502
+   ],
+   "offset": 502
+  },
+  {
+   "name": "b0",
+   "shape": [
+    512
+   ],
+   "offset": 257526
+  },
+  {
+   "name": "w1",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 258038
+  },
+  {
+   "name": "b1",
+   "shape": [
+    512
+   ],
+   "offset": 520182
+  },
+  {
+   "name": "w2",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 520694
+  },
+  {
+   "name": "b2",
+   "shape": [
+    512
+   ],
+   "offset": 782838
+  },
+  {
+   "name": "w3",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 783350
+  },
+  {
+   "name": "b3",
+   "shape": [
+    512
+   ],
+   "offset": 1045494
+  },
+  {
+   "name": "w4",
+   "shape": [
+    512,
+    1014
+   ],
+   "offset": 1046006
+  },
+  {
+   "name": "b4",
+   "shape": [
+    512
+   ],
+   "offset": 1565174
+  },
+  {
+   "name": "w5",
+   "shape": [
+    512,
+    512
+   ],
+   "offset": 1565686
+  },
+  {
+   "name": "b5",
+   "shape": [
+    512
+   ],
+   "offset": 1827830
+  },
+  {
+   "name": "w6",
+   "shape": [
+    107,
+    512
+   ],
+   "offset": 1828342
+  },
+  {
+   "name": "b6",
+   "shape": [
+    107
+   ],
+   "offset": 1883126
+  }
+ ],
+ "source": "predict_probe_long.pt",
+ "concatAt": 4
+}

@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=23');
+  worker = new Worker('worker.js?v=24');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -178,6 +178,38 @@ function factsHTML(f, seat, names) {
   if (pts.length) L.push(`<b>Augen:</b> ${pts.join(' · ')}`);
   return L.map(x => `<div class="fx">${x}</div>`).join('');
 }
+// prediction heads (models/predict, rl/predict_heads.py): probabilities from my own view for what is still open; the
+// certain facts come first (a card nobody else can have → 0 %, the only possible holder → 100 %)
+const pct = x => `${Math.round(100 * x)} %`;
+function predOf(p, f, seat) {
+  const rel = q => (q - seat + 4) % 4;
+  const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : p[6 + (rel(q) - 1) * 24 + t];
+  const trump = q => f.void[q].includes(4) ? 0 : f.trumps.some(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q) ? 1 : p[3 + rel(q) - 1];
+  return { team: q => p[rel(q) - 1], trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107) };
+}
+function predHTML(p, f, seat, names) {
+  const P = predOf(p, f, seat), nm = q => esc(names[q]), others = [1, 2, 3].map(r => (seat + r) % 4), L = [];
+  const open = others.filter(q => f.team[q] === null);
+  if (open.length) L.push(`<b>Mit dir in einer Partei:</b> ${open.map(q => `${nm(q)} ${pct(P.team(q))}`).join(' · ')}`);
+  if (f.trumps.length && f.trumps.some(t => f.unseen[t] > 0)) L.push(`<b>Hat noch Trumpf:</b> ${others.map(q => `${nm(q)} ${pct(P.trump(q))}`).join(' · ')}`);
+  for (const t of f.trumps.filter(t => f.unseen[t] > 0).slice(0, 2))
+    L.push(`<b>${E.cardName(t * 2)}${f.unseen[t] > 1 ? ' (2×)' : ''} bei:</b> ${others.map(q => `${nm(q)} ${pct(P.card(q, t))}`).join(' · ')}`);
+  L.push(`<b>Deine Partei gewinnt:</b> ${pct(P.game)} · holt ≥ 90 Augen: ${pct(P.augen[0])} · Gegner unter 90: ${pct(P.augen[1])}`);
+  return L.map(x => `<div class="fx">${x}</div>`).join('');
+}
+// "why" for a card that cost something: what the trick odds and the cards still out say (facts first, then the heads)
+function whyHTML(it, f, p, seat, names) {
+  if (it.type !== 'card' || it.forced || it.cost < 0.25 || it.best === undefined || (it.best >> 1) === (it.a >> 1)) return '';
+  const P = p ? predOf(p, f, seat) : null, a = it.a >> 1, b = it.best >> 1, L = [];
+  if (P && P.trick(b) - P.trick(a) >= 0.15) L.push(`Mit ${E.cardName(it.best)} gewinnt deine Partei diesen Stich zu ${pct(P.trick(b))}, mit ${E.cardName(it.a)} nur zu ${pct(P.trick(a))}.`);
+  else if (P && P.trick(a) - P.trick(b) >= 0.15) L.push(`Mit ${E.cardName(it.a)} gewinnt deine Partei diesen Stich eher (${pct(P.trick(a))} statt ${pct(P.trick(b))}) – der Vorteil von ${E.cardName(it.best)} kommt also später im Spiel (z. B. eine hohe Karte behalten).`);
+  const k = f.cls[a], order = k === 4 ? f.trumps : [...Array(24).keys()].filter(t => f.cls[t] === k).sort((x, y) => x % 6 - y % 6);
+  const higher = order.slice(0, Math.max(0, order.indexOf(a))).filter(t => f.unseen[t] > 0);
+  const where = t => { if (f.holders[t].length === 1) return ` (sicher bei ${esc(names[f.holders[t][0]])})`;
+    if (!P) return ''; const q = f.holders[t].reduce((m, x) => P.card(x, t) > P.card(m, t) ? x : m, f.holders[t][0]); return ` (wohl bei ${esc(names[q])}, ${pct(P.card(q, t))})`; };
+  if (higher.length && (!P || P.trick(a) < 0.5)) L.push(`Höher als ${E.cardName(it.a)} ist noch draußen: ${higher.slice(0, 3).map(t => E.cardName(t * 2) + where(t)).join(', ')}.`);
+  return L.length ? `<p class="hint rv-why"><b>Warum?</b> ${L.join(' ')}</p>` : '';
+}
 // the review: replay the game record — my Vorbehalt, one step per trick (my card), and announcements (made, or the
 // coach would have made one) — and ask the worker for all real choices at once
 let review = null;   // { id, rec, seat, tricks, items: [{type, v, legal, a, forced, costs, best, cost}], at, all } or null
@@ -208,7 +240,7 @@ function gotReview(d) {
     const res = d.review[k];
     const card = it.type === 'card' || it.type === 'pov';
     const c = card ? cardCosts(it.legal, res.vals) : it.type === 'ann' ? annCosts(it.legal, res.vals) : it.type === 'povask' ? optCosts(it.legal, res.vals) : resvCosts(it.legal, res);
-    it.costs = c.costs; it.best = c.best;
+    it.costs = c.costs; it.best = c.best; it.pred = res.pred || null;
     it.cost = card ? c.costs[it.a >> 1] || 0 : it.type === 'ann' || it.type === 'povask' ? c.costs[it.a] : c.costs[it.a].c;
   });
   // announcements: only those I made, and the first moment each one the coach would have made was missed
@@ -478,7 +510,7 @@ function render(v, meta) {
   H.style.setProperty('--n', hand.length); [...H.children].forEach((c, i) => c.style.setProperty('--i', i));
   H.querySelectorAll('.card.legal').forEach(c => { c.tabIndex = 0; c.onclick = () => humanAct(+c.dataset.id); });
   const fx = $('facts'), showFx = coachOn && v.phase === 'play' && !!v.facts && coverFor < 0;   // live with the coach on; closed by default (counting is part of the game)
-  fx.hidden = !showFx; if (showFx) $('facts-body').innerHTML = factsHTML(v.facts, me, meta.names);
+  fx.hidden = !showFx; if (showFx) $('facts-body').innerHTML = factsHTML(v.facts, me, meta.names) + (cd && cd.pred && myTurn ? `<div class="fx fx-sub">Wahrscheinlich (aus deiner Sicht):</div>${predHTML(cd.pred, v.facts, me, meta.names)}` : '');
 
   // overlays driven by the game (not over a dialog the user opened)
   if (userDialog) return;
@@ -559,9 +591,11 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     ${table ? `<div class="rv-row rv-table">${table}</div>` : ''}
     <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? it.type === 'pov' ? 'keine Wahl (alle Trümpfe müssen abgegeben werden)' : 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}</p>
     ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
+    ${it.type === 'card' && v.facts ? whyHTML(it, v.facts, it.pred, R.seat, meta.names) : ''}
+    ${it.type === 'card' && it.pred && !it.forced ? `<p class="hint">Stich für deine Partei: ${[...new Set(ratedCards(it.legal).map(i => it.legal[i] >> 1))].sort((x, y) => it.pred[78 + y] - it.pred[78 + x]).map(t => `${E.cardName(t * 2)} ${pct(it.pred[78 + t])}`).join(' · ')}</p>` : ''}
     ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
     <div class="rv-row rv-hand">${hand}</div>
-    ${cardItem && v.facts ? `<details class="rv-facts" id="rv-facts"${R.facts !== false ? ' open' : ''}><summary>Sicher bekannt (vor deiner Karte)</summary>${factsHTML(v.facts, R.seat, meta.names)}</details>` : ''}
+    ${cardItem && v.facts ? `<details class="rv-facts" id="rv-facts"${R.facts !== false ? ' open' : ''}><summary>Sicher bekannt (vor deiner Karte)</summary>${factsHTML(v.facts, R.seat, meta.names)}${it.pred ? `<div class="fx fx-sub">Wahrscheinlich (aus deiner Sicht):</div>${predHTML(it.pred, v.facts, R.seat, meta.names)}` : ''}</details>` : ''}
     <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
     <p class="hint">${foot}</p>
     <div class="row" style="justify-content:space-between"><span><button class="btn" id="rv-prev"${R.at ? '' : ' disabled'}>←</button> <button class="btn" id="rv-next"${R.at < R.items.length - 1 ? '' : ' disabled'}>→</button></span>
