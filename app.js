@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=27');
+  worker = new Worker('worker.js?v=28');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data || 'preds' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data), 'preds' in e.data && gotSignals(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -181,17 +181,27 @@ function factsHTML(f, seat, names) {
 // prediction heads (models/predict, rl/predict_heads.py): probabilities from my own view for what is still open; the
 // certain facts come first (a card nobody else can have → 0 %, the only possible holder → 100 %)
 const pct = x => `${Math.round(100 * x)} %`;
-function predOf(p0, f, seat) {   // only facts say 0 % or 100 %; a head's estimate stays within 1–99 %
-  const rel = q => (q - seat + 4) % 4, p = p0.map(z => Math.min(0.99, Math.max(0.01, z)));
-  const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : p[6 + (rel(q) - 1) * 24 + t];
+function predOf(p0, f, seat, gt) {   // only facts say 0 % or 100 %; a head's estimate stays within 1–99 %
+  const rel = q => (q - seat + 4) % 4, p = p0.map(z => Math.min(0.99, Math.max(0.01, z))), clip = x => Math.min(0.99, Math.max(0.01, x));
+  // In a normal game "X is my partner" and "X has a ♣D" are one question (I'm Kontra: X has none; Re: X has the other
+  // one), but two heads answer it and can disagree. So one estimate: their average, scaled to the one partner still
+  // open (held-out games: slightly better than either head alone; a silent wedding breaks the rule, but is rare).
+  const CQ = E.T(E.C, E.Q), mine = f.team[seat], others = [1, 2, 3].map(r => (seat + r) % 4), open = others.filter(q => f.team[q] === null), joint = {};
+  if (gt === 'normal' && mine !== null && open.length > 1 && !others.some(q => f.team[q] === mine)) {
+    const raw = open.map(q => { const cq = p0[6 + (rel(q) - 1) * 24 + CQ]; return (p0[rel(q) - 1] + (mine === 0 ? 1 - cq : cq)) / 2; }), sum = raw.reduce((a, b) => a + b, 0);
+    open.forEach((q, i) => { joint[q] = clip(raw[i] / sum); });
+  }
+  const team = q => q in joint ? joint[q] : p[rel(q) - 1];
+  const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : t === CQ && q in joint ? (mine === 0 ? 1 - joint[q] : joint[q]) : p[6 + (rel(q) - 1) * 24 + t];
   const trump = q => f.void[q].includes(4) ? 0 : f.trumps.some(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q) ? 1 : p[3 + rel(q) - 1];
   const who = t => { const w = [0, 1, 2, 3].map(q => p0[107 + 4 * t + rel(q)]), sum = w.reduce((a, b) => a + b, 0) || 1; return w.map(x => x / sum); };   // by seat
-  return { team: q => p[rel(q) - 1], trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107), who };
+  return { team, trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107), who };
 }
-function predHTML(p, f, seat, names) {
-  const P = predOf(p, f, seat), nm = q => esc(names[q]), others = [1, 2, 3].map(r => (seat + r) % 4), L = [];
-  const open = others.filter(q => f.team[q] === null);
-  if (open.length) L.push(`<b>Mit dir in einer Partei:</b> ${open.map(q => `${nm(q)} ${pct(P.team(q))}`).join(' · ')}`);
+function predHTML(p, f, seat, names, gt) {
+  const P = predOf(p, f, seat, gt), nm = q => esc(names[q]), others = [1, 2, 3].map(r => (seat + r) % 4), L = [];
+  const open = others.filter(q => f.team[q] === null), ts = open.map(q => P.team(q)), avg = ts.reduce((a, b) => a + b, 0) / (open.length || 1);
+  const flat = open.length > 1 && ts.every(t => Math.abs(t - avg) < 0.1);   // all within 10 points of each other's mean: no real hint yet
+  if (open.length) L.push(`<b>Mit dir in einer Partei:</b> ${flat ? 'noch keine klare Tendenz <small>(' : ''}${open.map(q => `${nm(q)} ${pct(P.team(q))}`).join(' · ')}${flat ? ')</small>' : ''}`);
   if (f.trumps.length && f.trumps.some(t => f.unseen[t] > 0)) L.push(`<b>Hat noch Trumpf:</b> ${others.map(q => `${nm(q)} ${pct(P.trump(q))}`).join(' · ')}`);
   for (const t of f.trumps.filter(t => f.unseen[t] > 0).slice(0, 2))
     L.push(`<b>${E.cardName(t * 2)}${f.unseen[t] > 1 ? ' (2×)' : ''} bei:</b> ${others.map(q => `${nm(q)} ${pct(P.card(q, t))}`).join(' · ')}`);
@@ -215,7 +225,7 @@ function partnerTxt(q, f, P, seat) {   // "sicher dein Partner" / "wohl Gegner (
 // points given away or smeared, and higher cards still out (facts first, then the heads)
 function whyHTML(it, v, f, p, seat, names) {
   if (it.type !== 'card' || it.forced || it.cost < 0.25 || it.best === undefined || (it.best >> 1) === (it.a >> 1)) return '';
-  const P = p ? predOf(p, f, seat) : null, a = it.a >> 1, b = it.best >> 1, L = [];
+  const P = p ? predOf(p, f, seat, v.gameType) : null, a = it.a >> 1, b = it.best >> 1, L = [];
   const whoTxt = t => { if (!P || p.length < 203) return ''; const w = P.who(t), q = w.indexOf(Math.max(...w));
     return w[q] >= 0.4 ? ` (der Stich geht wohl an ${q === seat ? 'dich' : esc(names[q])}, ${pct(Math.min(0.99, w[q]))})` : ''; };
   if (v.trick.length) {
@@ -299,7 +309,7 @@ function askSignals() {
 function gotSignals(d) {
   const R = review; if (!R || d.id !== R.sigId || !d.preds) return;
   const chance = (v, p, q) => v.facts.team[R.seat] !== null && v.facts.team[q] !== null ? +(v.facts.team[R.seat] === v.facts.team[q])
-    : Math.min(0.99, Math.max(0.01, p[(R.seat - q + 4) % 4 - 1]));   // facts first; me relative to q
+    : predOf(p, v.facts, q, v.gameType).team(R.seat);   // facts first, then the heads (consistent with ♣D)
   for (const { it, q, k } of R.sigMeta) {
     const V = R.sigViews, ps = d.preds, hasBest = (it.best >> 1) !== (it.a >> 1);
     (it.sig = it.sig || []).push({ q, before: chance(V[k], ps[k], q), mine: chance(V[k + 1], ps[k + 1], q), best: hasBest ? chance(V[k + 2], ps[k + 2], q) : null });
@@ -573,7 +583,7 @@ function render(v, meta) {
   H.style.setProperty('--n', hand.length); [...H.children].forEach((c, i) => c.style.setProperty('--i', i));
   H.querySelectorAll('.card.legal').forEach(c => { c.tabIndex = 0; c.onclick = () => humanAct(+c.dataset.id); });
   const fx = $('facts'), showFx = coachOn && v.phase === 'play' && !!v.facts && coverFor < 0;   // live with the coach on; closed by default (counting is part of the game)
-  fx.hidden = !showFx; if (showFx) $('facts-body').innerHTML = factsHTML(v.facts, me, meta.names) + (cd && cd.pred && myTurn ? `<div class="fx fx-sub">Wahrscheinlich (aus deiner Sicht):</div>${predHTML(cd.pred, v.facts, me, meta.names)}` : '');
+  fx.hidden = !showFx; if (showFx) $('facts-body').innerHTML = factsHTML(v.facts, me, meta.names) + (cd && cd.pred && myTurn ? `<div class="fx fx-sub">Wahrscheinlich (aus deiner Sicht):</div>${predHTML(cd.pred, v.facts, me, meta.names, v.gameType)}` : '');
 
   // overlays driven by the game (not over a dialog the user opened)
   if (userDialog) return;
@@ -660,7 +670,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     ${it.type === 'card' && it.pred && !it.forced ? `<p class="hint">Stich für deine Partei: ${[...new Set(ratedCards(it.legal).map(i => it.legal[i] >> 1))].sort((x, y) => it.pred[78 + y] - it.pred[78 + x]).map(t => `${E.cardName(t * 2)} ${pct(it.pred[78 + t])}`).join(' · ')}</p>` : ''}
     ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
     <div class="rv-row rv-hand">${hand}</div>
-    ${cardItem && v.facts ? `<details class="rv-facts" id="rv-facts"${R.facts !== false ? ' open' : ''}><summary>Sicher bekannt (vor deiner Karte)</summary>${factsHTML(v.facts, R.seat, meta.names)}${it.pred ? `<div class="fx fx-sub">Wahrscheinlich (aus deiner Sicht):</div>${predHTML(it.pred, v.facts, R.seat, meta.names)}` : ''}</details>` : ''}
+    ${cardItem && v.facts ? `<details class="rv-facts" id="rv-facts"${R.facts !== false ? ' open' : ''}><summary>Sicher bekannt (vor deiner Karte)</summary>${factsHTML(v.facts, R.seat, meta.names)}${it.pred ? `<div class="fx fx-sub">Wahrscheinlich (aus deiner Sicht):</div>${predHTML(it.pred, v.facts, R.seat, meta.names, v.gameType)}` : ''}</details>` : ''}
     <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
     <p class="hint">${foot}</p>
     <div class="row" style="justify-content:space-between"><span><button class="btn" id="rv-prev"${R.at ? '' : ' disabled'}>←</button> <button class="btn" id="rv-next"${R.at < R.items.length - 1 ? '' : ' disabled'}>→</button></span>
