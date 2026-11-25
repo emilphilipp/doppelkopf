@@ -63,7 +63,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=19');
+  worker = new Worker('worker.js?v=20');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -131,9 +131,11 @@ function annCosts(legal, vals) {
 }
 // Vorbehalte: cost vs the coach's best option for the whole list (c), and this game alone relative to that option (g:
 // positive = better in this game) — they differ when a solo uses up the Pflichtsolo
+// (until 25 Nov the whole-list value came from the critic, which undervalues a good Pflichtsolo by ~6 points; until
+// the list part is rebuilt from simulated lists, only this game is rated: d.game)
 function resvCosts(legal, d) {
-  const b = d.vals.reduce((m, x, i) => x > d.vals[m] ? i : m, 0), out = {};
-  legal.forEach((a, i) => { out[a] = { c: Math.max(0, d.vals[b] - d.vals[i]), g: d.game ? d.game[i] - d.game[b] : null }; });
+  const v = d.game || d.vals, b = v.reduce((m, x, i) => x > v[m] ? i : m, 0), out = {};
+  legal.forEach((a, i) => { out[a] = { c: Math.max(0, v[b] - v[i]), g: null }; });
   return { costs: out, best: legal[b] };
 }
 function costBadge(c) {
@@ -412,7 +414,7 @@ function render(v, meta) {
     for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
     const soli = legal.filter(a => E.isSoloResv(E.RESV[a - E.ACT_RES]));
     if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}${coachTxt(a)}</option>`).join('')}</select>`;
-    if (cr && cr.costs[legal[0]].g !== null) acts += `<small class="hint cg-hint">Coach: Punkte für die ganze Liste (ein Solo jetzt erfüllt das Pflichtsolo) · „Spiel“: nur dieses Spiel</small>`;
+    if (cr) acts += `<small class="hint cg-hint">Coach: Punkte nur für dieses Spiel – der Wert für den Rest der Liste (Pflichtsolo erfüllt oder noch offen) kommt bald</small>`;
   } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
   else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
   else if (v.phase === 'play' && coverFor < 0 && (mode === 'client' || meta.seats[me] === 'human')) {   // not my turn: queue it
@@ -506,7 +508,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
   const done = it.type === 'card' ? R.tricks[v.tricks.length] : null;   // how this trick ended
   const foot = it.type === 'card' ? 'Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.'
     : it.type === 'ann' ? 'Ansagen: was die Ansage jetzt im Schnitt bringt oder kostet (Punkte aus deiner Sicht, ohne Kartenglück). Gezeigt werden deine Ansagen und der erste Moment, in dem der Coach selbst angesagt hätte.'
-    : 'Vorbehalt: Punkte für den Rest der Liste – ein Solo jetzt erfüllt dein Pflichtsolo, sonst musst du es später spielen. „Spiel“ = nur dieses Spiel, im Vergleich zur besten Wahl (★).';
+    : 'Vorbehalt: Punkte nur für dieses Spiel (im Vergleich zur besten Wahl ★). Was ein jetzt erfülltes oder noch offenes Pflichtsolo für den Rest der Liste bedeutet, wird noch nicht eingerechnet.';
   openDialog(`<h2>Analyse</h2><p class="hint">${reviewSummary()}</p><div class="rv-strip">${strip}</div>
     <h3>${what(it)} · ${it.type === 'resv' ? 'Vorbehalte' : gameLabel(v, meta)}</h3>${info ? `<p class="hint">${info}</p>` : ''}
     ${table ? `<div class="rv-row rv-table">${table}</div>` : ''}
