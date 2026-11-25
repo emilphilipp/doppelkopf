@@ -5,24 +5,34 @@
 // reservation leak it gained nothing, -0.05 ± 0.07 vs the plain network): sampled deals that fit the bot's own view
 // (never the real hidden cards), every card tried, the actor plays on, the critic judges. The number of sampled deals
 // adapts to the device: about BUDGET ms per decision, at most 60; a device too slow for MIN_DETS plays without search.
-self.DOKO_VERSION = 31;
-importScripts('doko.js?v=31');
+self.DOKO_VERSION = 32;
+importScripts('doko.js?v=32');
 let net = null, critic = null, coach = null, netName = null, policy = false;
 let withCritic = false;   // bot.json "critic": true → models/critic is deployed too (search at play time)
-const netReady = Doko.ready.then(() => fetch('models/bot.json?v=31')).then(r => r.json()).then(m => { netName = m.source; policy = m.kind === 'policy'; withCritic = !!m.critic; })
-  .then(() => Doko.loadNetUrl('models/bot', '?v=31')).then(id => { net = id; }, () => { net = null; })
-  .then(() => withCritic ? Doko.loadNetUrl('models/critic', '?v=31').then(id => { critic = id; }, () => { critic = null; }) : null);
+const netReady = Doko.ready.then(() => fetch('models/bot.json?v=32')).then(r => r.json()).then(m => { netName = m.source; policy = m.kind === 'policy'; withCritic = !!m.critic; })
+  .then(() => Doko.loadNetUrl('models/bot', '?v=32')).then(id => { net = id; }, () => { net = null; })
+  .then(() => withCritic ? Doko.loadNetUrl('models/critic', '?v=32').then(id => { critic = id; }, () => { critic = null; }) : null);
 // Coach (since 24 Nov): a separate network, trained on what each card is worth from the player's own view (taught on
 // real deals, so it averages over the hidden cards honestly); loaded on first use. Its outputs are points × 4 (qValues).
 // Its values count this game plus the rest of the Pflichtsolo list (for Vorbehalte since 25 Nov: this game's points +
 // a table of what the resulting list situation is worth, from simulated lists); coach_game counts this game only — the
 // two differ for Vorbehalte (a solo now uses up the Pflichtsolo), so both are shown there.
 let coachReady = null, coachGame = null, predNet = null;   // predNet: the prediction heads (rl/predict_heads.py; logits → %)
-const loadNet = name => Doko.loadNetUrl('models/' + name, '?v=31').then(id => id, () => null);
+const loadNet = name => Doko.loadNetUrl('models/' + name, '?v=32').then(id => id, () => null);
 const loadCoach = () => coachReady || (coachReady = Promise.all([loadNet('coach'), loadNet('coach_game'), loadNet('predict')]).then(([a, b, c]) => { coach = a; coachGame = b; predNet = c; }));
-const coachOf = (v, legal) => ({ vals: Doko.qValues(v, legal, coach).map(x => x / 4),
-  game: v.phase === 'reserve' && coachGame !== null ? Doko.qValues(v, legal, coachGame).map(x => x / 4) : null,
-  pred: v.phase === 'play' && predNet !== null ? Doko.netOut(v, predNet).map(z => 1 / (1 + Math.exp(-z))) : null });
+// The last EG_TRICKS tricks, once all parties are public: exact values instead of a network (dokors/src/endgame.rs —
+// every card distribution that fits the player's facts, played out perfectly by both sides, averaged). Per legal
+// action its value in points, null for non-cards; null if not applicable. Also used by the KI.
+const EG_TRICKS = 3, EG_DEALS = 200;
+const exact = (v, legal) => {
+  if (v.phase !== 'play' || v.handSize - v.tricks.length > EG_TRICKS || !legal.some(a => a < Doko.ACT_ANN)) return null;
+  const r = Doko.endgame(v, EG_TRICKS, EG_DEALS); if (!r) return null;
+  return { deals: r.deals, vals: legal.map(a => { const i = r.cards.findIndex(c => c >> 1 === a >> 1); return a < Doko.ACT_ANN && i >= 0 ? r.vals[i] : null; }) };
+};
+const coachOf = (v, legal) => { const x = exact(v, legal), vals = Doko.qValues(v, legal, coach).map(q => q / 4);
+  return { vals: x ? vals.map((q, i) => x.vals[i] !== null ? x.vals[i] : q) : vals, exact: x ? x.deals : 0,
+    game: v.phase === 'reserve' && coachGame !== null ? Doko.qValues(v, legal, coachGame).map(q => q / 4) : null,
+    pred: v.phase === 'play' && predNet !== null ? Doko.netOut(v, predNet).map(z => 1 / (1 + Math.exp(-z))) : null }; };
 const trained = v => net !== null && !v.rules.withNines;   // the network only knows the house rules (no nines)
 // a policy network's outputs are preferences (logits × 4 from qValues), not points: softmax → %
 const shown = q => { if (!policy) return q; const m = Math.max(...q), e = q.map(x => Math.exp((x - m) / 4)), t = e.reduce((a, b) => a + b, 0); return e.map(x => 100 * x / t); };
@@ -47,9 +57,12 @@ onmessage = async e => {
     const kind = bot === 'dmc' && !trained(view) ? 'heuristic' : bot;
     if (kind === 'dmc') {   // also report the values, so a game log shows what the KI thought
       const q = Doko.qValues(view, legal, net); let b = 0; for (let i = 1; i < q.length; i++) if (q[i] > q[b]) b = i;
-      let a = legal[b], dets = 0;
+      let a = legal[b], dets = 0, eg = null;
       const cards = legal.filter(x => x < Doko.ACT_ANN).length;
-      if (critic !== null && view.phase === 'play' && cards > 1 && a < Doko.ACT_ANN) {
+      if (view.phase === 'play' && cards > 1 && a < Doko.ACT_ANN && (eg = exact(view, legal))) {   // endgame: the best exact value, ties → the network's choice
+        const top = Math.max(...eg.vals.filter(x => x !== null)); let bq = -Infinity;
+        legal.forEach((c, i) => { if (eg.vals[i] !== null && eg.vals[i] >= top - 1e-9 && q[i] > bq) { bq = q[i]; a = c; } });
+      } else if (critic !== null && view.phase === 'play' && cards > 1 && a < Doko.ACT_ANN) {
         dets = msPerDetCard === null ? MIN_DETS : Math.min(MAX_DETS, Math.floor(BUDGET / (msPerDetCard * cards)));
         if (dets >= MIN_DETS) {
           const t1 = Date.now();
@@ -58,7 +71,7 @@ onmessage = async e => {
           msPerDetCard = msPerDetCard === null ? per : 0.7 * msPerDetCard + 0.3 * per;
         } else dets = 0;
       }
-      postMessage({ id, a, vals: q, model: netName + (dets ? ` + Suche (${dets})` : ''), ms: Date.now() - t0 }); return;
+      postMessage({ id, a, vals: q, model: netName + (dets ? ` + Suche (${dets})` : '') + (eg ? ' + Endspiel exakt' : ''), ms: Date.now() - t0 }); return;
     }
     const key = kind + JSON.stringify(opts || {});
     const fn = cache[key] || (cache[key] = Doko.BOTS[kind].make(Object.assign({ net }, opts)));

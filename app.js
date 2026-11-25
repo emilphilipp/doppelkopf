@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=31');
+  worker = new Worker('worker.js?v=32');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data || 'preds' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data), 'preds' in e.data && gotSignals(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -267,14 +267,14 @@ function startReview(seat) {
   if (review && review.rec === G.rec && review.seat === seat) return;
   const r = G.rec, s = E.newGame({ dealer: r.dealer, rules: G.rules, hands: r.hands, duty: r.duty, forced: r.forced, listLeft: r.listLeft });
   const items = [], item = (type, a, legal) => ({ type, v: E.view(s, seat), all: s.hands.map(h => h.slice()), legal, a, forced: false, costs: {}, cost: 0 });
-  for (const x of r.actions) {
+  for (const [k, x] of r.actions.entries()) {
     if (x.s === seat) {
       const legal = E.legalActions(s);
       if (s.phase === 'reserve' && legal.length > 1) items.push(item('resv', x.a, legal));
       else if (isPovCards(s.phase) && legal.length > 1) { const it = item('pov', x.a, legal); it.forced = povForced(it.v, legal); items.push(it); }
       else if (s.phase === 'povAsk') items.push(item('povask', x.a, legal));
       else if (s.phase === 'play' && legal.some(isAnn)) items.push(item('ann', isAnn(x.a) ? x.a : E.ACT_ANN, legal));   // asked out of turn, or on my turn before my card
-      if (s.phase === 'play' && x.a < E.ACT_ANN) { const it = item('card', x.a, legal); it.forced = ratedCards(legal).length < 2; it.st = E.clone(s); items.push(it); }
+      if (s.phase === 'play' && x.a < E.ACT_ANN) { const it = item('card', x.a, legal); it.forced = ratedCards(legal).length < 2; it.st = E.clone(s); it.k = k; items.push(it); }
     }
     E.step(s, x.a);
   }
@@ -289,7 +289,7 @@ function gotReview(d) {
     const res = d.review[k];
     const card = it.type === 'card' || it.type === 'pov';
     const c = card ? cardCosts(it.legal, res.vals) : it.type === 'ann' ? annCosts(it.legal, res.vals) : it.type === 'povask' ? optCosts(it.legal, res.vals) : resvCosts(it.legal, res);
-    it.costs = c.costs; it.best = c.best; it.pred = res.pred || null;
+    it.costs = c.costs; it.best = c.best; it.pred = res.pred || null; it.exact = res.exact || 0;
     it.cost = card ? c.costs[it.a >> 1] || 0 : it.type === 'ann' || it.type === 'povask' ? c.costs[it.a] : c.costs[it.a].c;
   });
   // announcements: only those I made, and the first moment each one the coach would have made was missed
@@ -388,6 +388,7 @@ function act(seat, a, q, model) {   // q, model: the KI bot's values for its leg
 }
 function update() {
   const s = G.state;
+  if (s.phase === 'done' && !G.recorded && G.practice) G.recorded = true;   // a practice game counts for nothing
   if (s.phase === 'done' && !G.recorded) {
     G.recorded = true;
     const r = s.result;
@@ -618,14 +619,28 @@ function showResult(v, meta) {  // stays open until the next game starts
   const wtxt = r.winner === 1 ? `Re gewinnt (${re.map(nm).join(' & ')})` : r.winner === 0 ? `Kontra gewinnt (${ko.map(nm).join(' & ')})` : 'Keine Partei gewinnt';
   const lines = r.lines.map(([l, p]) => `<tr><td>${esc(l)}</td><td class="${p > 0 ? 'pos' : 'neg'}">${p > 0 ? 'Re' : 'Kontra'} +${Math.abs(p)}</td></tr>`).join('');
   const seats = [0, 1, 2, 3].map(q => `<tr><td>${nm(q)} <span class="badge ${v.team[q] ? 're' : 'ko'}">${v.team[q] ? 'Re' : 'Kontra'}</span></td><td class="${r.perSeat[q] >= 0 ? 'pos' : 'neg'}">${r.perSeat[q] > 0 ? '+' : ''}${r.perSeat[q]}</td></tr>`).join('');
-  openDialog(`<h2>${wtxt}</h2><p class="hint">${gameLabel(v, meta)} · Augen: Re ${r.re} – Kontra ${r.ko}</p>
+  const P = G && G.practice;
+  openDialog(`<h2>${P ? 'Übungsspiel: ' : ''}${wtxt}</h2><p class="hint">${gameLabel(v, meta)} · Augen: Re ${r.re} – Kontra ${r.ko}${P ? ' · zählt nicht' : ''}</p>
     <table class="res">${lines}</table><h3>Punkte</h3><table class="res">${seats}</table>${coachHTML()}
     <div class="row" style="justify-content:flex-end;margin-top:12px">${review && review.ready && review.items.length ? '<button class="btn" id="r-rev">Analyse</button>' : ''}<button class="btn" id="r-look">Stiche ansehen</button>
-    ${meta.host ? '<button class="btn primary" id="r-next">Nächstes Spiel</button>' : '<span class="hint">Warte auf den Gastgeber…</span>'}</div>`);
+    ${P ? '<button class="btn" id="r-again">Nochmal ab dort</button><button class="btn primary" id="r-back">Zurück zur Runde</button>'
+      : meta.host ? '<button class="btn primary" id="r-next">Nächstes Spiel</button>' : '<span class="hint">Warte auf den Gastgeber…</span>'}</div>`);
+  if (P) { $('r-again').onclick = () => startPractice(P.it, P.seat, P.r); $('r-back').onclick = endPractice; }
   $('r-look').onclick = () => showTricks(v, meta);
   if ($('r-rev')) $('r-rev').onclick = () => { review.open = true; userDialog = true; showReview(); };
-  if (meta.host) $('r-next').onclick = () => { closeDialog(); nextGame(); };
+  if (meta.host && $('r-next')) $('r-next').onclick = () => { closeDialog(); nextGame(); };
 }
+// "Ab hier nachspielen": the reviewed game from just before one of my cards, against the same bots — a practice game
+// (not logged, no effect on scores or the list); afterwards back to the match where it was
+const canPractice = () => G && mode !== 'client' && !G.cfg.seats.includes('remote');
+function startPractice(it, seat, r) {
+  const base = G.practice ? G.saved : G;
+  G = { cfg: base.cfg, rules: base.rules, scores: base.scores.slice(), history: [], gameNo: base.gameNo, dealer: base.dealer, duty: base.duty.slice(),
+    listCount: base.listCount, state: E.clone(it.st), rec: Object.assign({}, r, { actions: r.actions.slice(0, it.k) }), recorded: false, pauseUntil: 0,
+    waitAck: false, thinking: false, sameDealer: false, armed: [0, 0, 0, 0], practice: { it, seat, r }, saved: base };
+  review = null; viewSeat = seat; userDialog = false; closeDialog(); toast(`Übungsspiel ab Stich ${it.v.tricks.length + 1} – zählt nicht`); update();
+}
+function endPractice() { G = G.saved; review = null; userDialog = false; closeDialog(); refresh(); }
 function coachHTML() {   // the coach's verdict on my decisions of this game
   if (!review || !review.ask.length) return '';
   return `<h3>Coach</h3><p class="hint">${review.ready ? reviewSummary() : 'Der Coach bewertet deine Entscheidungen…'}</p>`;
@@ -664,13 +679,14 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
   const done = it.type === 'card' ? R.tricks[v.tricks.length] : null;   // how this trick ended
   const foot = it.type === 'povask' ? 'Armut mitnehmen oder nicht: Punkte im Vergleich zur besten Wahl (★), aus deiner Sicht und ohne Kartenglück; nimmt keiner mit, wird neu gegeben (zählt für die Liste nicht).'
     : it.type === 'pov' ? 'Zahl auf der Karte = wie viele Punkte es im Schnitt kostet, diese Karte abzugeben, gegenüber der besten (★) – aus deiner Sicht, ohne Kartenglück.'
+    : it.type === 'card' && it.exact ? `Zahl auf der Karte = wie viele Punkte sie gegenüber der besten (★) kostet – exakt berechnet: alle ${it.exact} Kartenverteilungen, die zu deinem Wissen passen, bis zum Ende durchgespielt (alle spielen bestmöglich).`
     : it.type === 'card' ? 'Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.'
     : it.type === 'ann' ? 'Ansagen: was die Ansage jetzt im Schnitt bringt oder kostet (Punkte aus deiner Sicht, ohne Kartenglück). Gezeigt werden deine Ansagen und der erste Moment, in dem der Coach selbst angesagt hätte.'
     : 'Vorbehalt: Punkte für die ganze Liste im Vergleich zur besten Wahl (★) = dieses Spiel („Spiel“) + Rest der Liste („Rest“). Ein Solo jetzt erfüllt dein Pflichtsolo; ein offenes Pflichtsolo ist später etwas wert (du kannst auf ein gutes Blatt warten), kurz vor Listenende droht die Vorführung.';
   openDialog(`<h2>Analyse</h2><p class="hint">${reviewSummary()}</p><div class="rv-strip">${strip}</div>
     <h3>${what(it)} · ${it.type === 'resv' ? 'Vorbehalte' : gameLabel(v, meta)}</h3>${info ? `<p class="hint">${info}</p>` : ''}
     ${table ? `<div class="rv-row rv-table">${table}</div>` : ''}
-    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? it.type === 'pov' ? 'keine Wahl (alle Trümpfe müssen abgegeben werden)' : 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}</p>
+    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? it.type === 'pov' ? 'keine Wahl (alle Trümpfe müssen abgegeben werden)' : 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ${it.exact ? '' : 'ca. '}${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}${it.exact && !it.forced ? ' <small class="hint">(exakt)</small>' : ''}</p>
     ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
     ${it.type === 'card' && v.facts ? whyHTML(it, v, v.facts, it.pred, R.seat, meta.names) : ''}
     ${it.type === 'card' ? signalHTML(it, R.seat, meta.names, R.team) : ''}
@@ -682,7 +698,8 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
     <p class="hint">${foot}</p>
     <div class="row" style="justify-content:space-between"><span><button class="btn" id="rv-prev"${R.at ? '' : ' disabled'}>←</button> <button class="btn" id="rv-next"${R.at < R.items.length - 1 ? '' : ' disabled'}>→</button></span>
-    <button class="btn primary" id="rv-close">Zurück</button></div>`);
+    <span>${it.type === 'card' && it.st && canPractice() ? '<button class="btn" id="rv-play" title="Von dieser Stelle gegen dieselben Bots weiterspielen (zählt nicht)">Ab hier nachspielen</button> ' : ''}<button class="btn primary" id="rv-close">Zurück</button></span></div>`);
+  if ($('rv-play')) $('rv-play').onclick = () => startPractice(it, R.seat, R.rec);
   const go = k => { R.at = Math.max(0, Math.min(R.items.length - 1, k)); showReview(); };
   $('dlg').querySelectorAll('.rv-chip').forEach(b => { b.onclick = () => go(+b.dataset.k); });
   $('rv-prev').onclick = () => go(R.at - 1); $('rv-next').onclick = () => go(R.at + 1);
