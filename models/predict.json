@@ -2,7 +2,7 @@
  "arch": "multi",
  "dtype": "f16",
  "obsDim": 502,
- "nAct": 107,
+ "nAct": 203,
  "hidden": 512,
  "bodyLayers": 7,
  "layout": [
@@ -106,7 +106,7 @@
   {
    "name": "w6",
    "shape": [
-    107,
+    203,
     512
    ],
    "offset": 1828342
@@ -114,11 +114,11 @@
   {
    "name": "b6",
    "shape": [
-    107
+    203
    ],
-   "offset": 1883126
+   "offset": 1932278
   }
  ],
- "source": "predict_probe_long.pt",
+ "source": "predict_probe_v2.pt",
  "concatAt": 4
 }

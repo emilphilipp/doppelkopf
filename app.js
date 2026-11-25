@@ -64,8 +64,8 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=26');
-  worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
+  worker = new Worker('worker.js?v=27');
+  worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data || 'preds' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data), 'preds' in e.data && gotSignals(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
 // the worker failed (script error, stale cached file, hang): bots continue on the main thread with the simple rules
@@ -185,7 +185,8 @@ function predOf(p0, f, seat) {   // only facts say 0 % or 100 %; a head's estima
   const rel = q => (q - seat + 4) % 4, p = p0.map(z => Math.min(0.99, Math.max(0.01, z)));
   const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : p[6 + (rel(q) - 1) * 24 + t];
   const trump = q => f.void[q].includes(4) ? 0 : f.trumps.some(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q) ? 1 : p[3 + rel(q) - 1];
-  return { team: q => p[rel(q) - 1], trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107) };
+  const who = t => { const w = [0, 1, 2, 3].map(q => p0[107 + 4 * t + rel(q)]), sum = w.reduce((a, b) => a + b, 0) || 1; return w.map(x => x / sum); };   // by seat
+  return { team: q => p[rel(q) - 1], trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107), who };
 }
 function predHTML(p, f, seat, names) {
   const P = predOf(p, f, seat), nm = q => esc(names[q]), others = [1, 2, 3].map(r => (seat + r) % 4), L = [];
@@ -215,6 +216,8 @@ function partnerTxt(q, f, P, seat) {   // "sicher dein Partner" / "wohl Gegner (
 function whyHTML(it, v, f, p, seat, names) {
   if (it.type !== 'card' || it.forced || it.cost < 0.25 || it.best === undefined || (it.best >> 1) === (it.a >> 1)) return '';
   const P = p ? predOf(p, f, seat) : null, a = it.a >> 1, b = it.best >> 1, L = [];
+  const whoTxt = t => { if (!P || p.length < 203) return ''; const w = P.who(t), q = w.indexOf(Math.max(...w));
+    return w[q] >= 0.4 ? ` (der Stich geht wohl an ${q === seat ? 'dich' : esc(names[q])}, ${pct(Math.min(0.99, w[q]))})` : ''; };
   if (v.trick.length) {
     var w = (v.leader + E.trickWinnerIdx(v, v.trick, v.tricks.length === 9)) % 4; const pts = v.trick.reduce((x, id) => x + cardPts(id), 0), pt = partnerTxt(w, f, P, seat);
     L.push(`Den Stich (bisher ${pts} Augen) hält gerade ${esc(names[w])}${pt ? ` – ${pt}` : ''}.`);
@@ -224,7 +227,7 @@ function whyHTML(it, v, f, p, seat, names) {
     L.push(`${toPartner ? 'Schmieren: ' : ''}${E.cardName(it.best)} bringt ${cardPts(it.best)} Augen in einen Stich, den deine Partei zu ${pct(P.trick(b))} gewinnt (${E.cardName(it.a)} nur ${cardPts(it.a)}).`);
   else if (P && cardPts(it.a) - cardPts(it.best) >= 7 && P.trick(a) < 0.4)
     L.push(`${E.cardName(it.a)} gibt ${cardPts(it.a)} Augen in einen Stich, den deine Partei nur zu ${pct(P.trick(a))} gewinnt – ${E.cardName(it.best)} kostet ${cardPts(it.best)}.`);
-  else if (P && P.trick(b) - P.trick(a) >= 0.15) L.push(`Mit ${E.cardName(it.best)} gewinnt deine Partei diesen Stich zu ${pct(P.trick(b))}, mit ${E.cardName(it.a)} nur zu ${pct(P.trick(a))}.`);
+  else if (P && P.trick(b) - P.trick(a) >= 0.15) L.push(`Mit ${E.cardName(it.best)} gewinnt deine Partei diesen Stich zu ${pct(P.trick(b))}${whoTxt(b)}, mit ${E.cardName(it.a)} nur zu ${pct(P.trick(a))}${whoTxt(a)}.`);
   else if (P && P.trick(a) - P.trick(b) >= 0.15) L.push(`Mit ${E.cardName(it.a)} gewinnt deine Partei diesen Stich eher (${pct(P.trick(a))} statt ${pct(P.trick(b))}) – der Vorteil von ${E.cardName(it.best)} liegt also später im Spiel.`);
   const k = f.cls[a], order = k === 4 ? f.trumps : [...Array(24).keys()].filter(t => f.cls[t] === k).sort((x, y) => x % 6 - y % 6);
   const higher = order.slice(0, Math.max(0, order.indexOf(a))).filter(t => f.unseen[t] > 0);
@@ -253,12 +256,12 @@ function startReview(seat) {
       else if (isPovCards(s.phase) && legal.length > 1) { const it = item('pov', x.a, legal); it.forced = povForced(it.v, legal); items.push(it); }
       else if (s.phase === 'povAsk') items.push(item('povask', x.a, legal));
       else if (s.phase === 'play' && legal.some(isAnn)) items.push(item('ann', isAnn(x.a) ? x.a : E.ACT_ANN, legal));   // asked out of turn, or on my turn before my card
-      if (s.phase === 'play' && x.a < E.ACT_ANN) { const it = item('card', x.a, legal); it.forced = ratedCards(legal).length < 2; items.push(it); }
+      if (s.phase === 'play' && x.a < E.ACT_ANN) { const it = item('card', x.a, legal); it.forced = ratedCards(legal).length < 2; it.st = E.clone(s); items.push(it); }
     }
     E.step(s, x.a);
   }
   const ask = items.filter(it => !it.forced);
-  review = { id: ++botReq, rec: r, seat, items, ask, tricks: s.tricks, at: 0, ready: !ask.length };
+  review = { id: ++botReq, rec: r, seat, items, ask, tricks: s.tricks, team: s.team.slice(), at: 0, ready: !ask.length };
   if (ask.length) worker.postMessage({ id: review.id, coachQ: true, view: ask[0].v, items: ask.map(it => ({ view: it.v, legal: it.legal })) });
 }
 function gotReview(d) {
@@ -275,8 +278,38 @@ function gotReview(d) {
   const missed = new Set();
   const keep = it => it.type !== 'ann' || isAnn(it.a) || it.cost >= 0.25 && !missed.has(it.best) && missed.add(it.best);
   review.items = review.items.filter(keep); review.ask = review.ask.filter(it => review.items.includes(it));
-  review.ready = true;
+  review.ready = true; askSignals();
   if (review.open) showReview(); else refresh();
+}
+// what my card tells the others: from each other player's view (while my party is not public to them), the heads'
+// chance that I am on their side — before my card, after it, and after the coach's card (a second worker pass)
+function askSignals() {
+  const R = review, views = [], meta = [];
+  for (const it of R.items) {
+    if (it.type !== 'card' || it.forced || !it.st || !it.pred) continue;
+    const after = a => { const c = E.clone(it.st); E.step(c, a); return c; }, mine = after(it.a), best = (it.best >> 1) !== (it.a >> 1) ? after(it.best) : null;
+    for (const q of [1, 2, 3].map(k => (R.seat + k) % 4)) {
+      const v0 = E.view(it.st, q); if (v0.known[R.seat] !== null) continue;
+      meta.push({ it, q, k: views.length }); views.push(v0, E.view(mine, q)); if (best) views.push(E.view(best, q));
+    }
+  }
+  if (!views.length) return;
+  R.sigId = ++botReq; R.sigMeta = meta; R.sigViews = views; worker.postMessage({ id: R.sigId, predQ: true, views });
+}
+function gotSignals(d) {
+  const R = review; if (!R || d.id !== R.sigId || !d.preds) return;
+  const chance = (v, p, q) => v.facts.team[R.seat] !== null && v.facts.team[q] !== null ? +(v.facts.team[R.seat] === v.facts.team[q])
+    : Math.min(0.99, Math.max(0.01, p[(R.seat - q + 4) % 4 - 1]));   // facts first; me relative to q
+  for (const { it, q, k } of R.sigMeta) {
+    const V = R.sigViews, ps = d.preds, hasBest = (it.best >> 1) !== (it.a >> 1);
+    (it.sig = it.sig || []).push({ q, before: chance(V[k], ps[k], q), mine: chance(V[k + 1], ps[k + 1], q), best: hasBest ? chance(V[k + 2], ps[k + 2], q) : null });
+  }
+  if (R.open) showReview();
+}
+function signalHTML(it, seat, names, team) {
+  const xs = (it.sig || []).filter(x => Math.abs(x.mine - x.before) >= 0.1 || x.best !== null && Math.abs(x.mine - x.best) >= 0.1);
+  if (!xs.length) return '';
+  return `<p class="hint rv-why"><b>Was deine Karte verrät</b> (Chance, dass du in derselben Partei bist): ${xs.map(x => `aus Sicht von ${esc(names[x.q])} <small>(${team[x.q] === team[seat] ? 'dein Partner' : 'Gegner'})</small> vorher ${pct(x.before)} → jetzt ${pct(x.mine)}${x.best !== null ? ` (mit ${E.cardName(it.best)}: ${pct(x.best)})` : ''}`).join(' · ')}</p>`;
 }
 function reviewSummary() {   // counts per label + total expected loss, or '' while the coach still works
   if (!review || !review.ready || !review.ask.length) return '';
@@ -622,6 +655,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? it.type === 'pov' ? 'keine Wahl (alle Trümpfe müssen abgegeben werden)' : 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}</p>
     ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
     ${it.type === 'card' && v.facts ? whyHTML(it, v, v.facts, it.pred, R.seat, meta.names) : ''}
+    ${it.type === 'card' ? signalHTML(it, R.seat, meta.names, R.team) : ''}
     ${it.type === 'ann' && it.pred ? `<p class="hint">${annChanceHTML(it.pred, it.legal)}</p>` : ''}
     ${it.type === 'card' && it.pred && !it.forced ? `<p class="hint">Stich für deine Partei: ${[...new Set(ratedCards(it.legal).map(i => it.legal[i] >> 1))].sort((x, y) => it.pred[78 + y] - it.pred[78 + x]).map(t => `${E.cardName(t * 2)} ${pct(it.pred[78 + t])}`).join(' · ')}</p>` : ''}
     ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
