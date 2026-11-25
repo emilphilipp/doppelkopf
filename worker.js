@@ -5,17 +5,22 @@
 // reservation leak it gained nothing, -0.05 ± 0.07 vs the plain network): sampled deals that fit the bot's own view
 // (never the real hidden cards), every card tried, the actor plays on, the critic judges. The number of sampled deals
 // adapts to the device: about BUDGET ms per decision, at most 60; a device too slow for MIN_DETS plays without search.
-self.DOKO_VERSION = 16;
-importScripts('doko.js?v=18');
+self.DOKO_VERSION = 19;
+importScripts('doko.js?v=19');
 let net = null, critic = null, coach = null, netName = null, policy = false;
 let withCritic = false;   // bot.json "critic": true → models/critic is deployed too (search at play time)
-const netReady = Doko.ready.then(() => fetch('models/bot.json?v=18')).then(r => r.json()).then(m => { netName = m.source; policy = m.kind === 'policy'; withCritic = !!m.critic; })
-  .then(() => Doko.loadNetUrl('models/bot', '?v=18')).then(id => { net = id; }, () => { net = null; })
-  .then(() => withCritic ? Doko.loadNetUrl('models/critic', '?v=18').then(id => { critic = id; }, () => { critic = null; }) : null);
+const netReady = Doko.ready.then(() => fetch('models/bot.json?v=19')).then(r => r.json()).then(m => { netName = m.source; policy = m.kind === 'policy'; withCritic = !!m.critic; })
+  .then(() => Doko.loadNetUrl('models/bot', '?v=19')).then(id => { net = id; }, () => { net = null; })
+  .then(() => withCritic ? Doko.loadNetUrl('models/critic', '?v=19').then(id => { critic = id; }, () => { critic = null; }) : null);
 // Coach (since 24 Nov): a separate network, trained on what each card is worth from the player's own view (taught on
 // real deals, so it averages over the hidden cards honestly); loaded on first use. Its outputs are points × 4 (qValues).
-let coachReady = null;
-const loadCoach = () => coachReady || (coachReady = Doko.loadNetUrl('models/coach', '?v=18').then(id => { coach = id; }, () => { coach = null; }));
+// Its values count this game plus the rest of the Pflichtsolo list (as the critic it learned from); coach_game counts
+// this game only — the two differ for Vorbehalte (a solo now uses up the Pflichtsolo), so both are shown there.
+let coachReady = null, coachGame = null;
+const loadNet = name => Doko.loadNetUrl('models/' + name, '?v=19').then(id => id, () => null);
+const loadCoach = () => coachReady || (coachReady = Promise.all([loadNet('coach'), loadNet('coach_game')]).then(([a, b]) => { coach = a; coachGame = b; }));
+const coachOf = (v, legal) => ({ vals: Doko.qValues(v, legal, coach).map(x => x / 4),
+  game: v.phase === 'reserve' && coachGame !== null ? Doko.qValues(v, legal, coachGame).map(x => x / 4) : null });
 const trained = v => net !== null && !v.rules.withNines;   // the network only knows the house rules (no nines)
 // a policy network's outputs are preferences (logits × 4 from qValues), not points: softmax → %
 const shown = q => { if (!policy) return q; const m = Math.max(...q), e = q.map(x => Math.exp((x - m) / 4)), t = e.reduce((a, b) => a + b, 0); return e.map(x => 100 * x / t); };
@@ -29,8 +34,8 @@ onmessage = async e => {
     if (coachQ) {   // per legal action: the coach's value in points and the bot's preference (logits)
       await loadCoach();
       const ok = trained(view) && coach !== null;
-      if (items) { postMessage({ id, review: ok ? items.map(it => Doko.qValues(it.view, it.legal, coach).map(x => x / 4)) : null }); return; }   // a whole game at once
-      postMessage({ id, coach: ok ? { vals: Doko.qValues(view, legal, coach).map(x => x / 4), pref: Doko.qValues(view, legal, net) } : null }); return;
+      if (items) { postMessage({ id, review: ok ? items.map(it => coachOf(it.view, it.legal)) : null }); return; }   // a whole game at once
+      postMessage({ id, coach: ok ? Object.assign(coachOf(view, legal), { pref: Doko.qValues(view, legal, net) }) : null }); return;
     }
     if (q) { postMessage({ id, q: trained(view) ? shown(Doko.qValues(view, legal, net)) : null, pct: policy }); return; }
     const t0 = Date.now();

@@ -63,7 +63,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=18');
+  worker = new Worker('worker.js?v=19');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -104,7 +104,7 @@ function gotQ(d) {
 // network trained on what each card is worth from the player's own view (it never sees the hidden cards). Live: a badge
 // on each card; after the game: a review of every card I played (replayed from the game record) --------------------
 let coachShown = { key: '', d: null }, coachAsked = { id: 0, key: '' };
-const coachKey = (v, legal) => JSON.stringify(['c', v.seat, v.hands[v.seat], v.trick, v.tricks.length, v.annBy, legal]);
+const coachKey = (v, legal) => JSON.stringify(['c', v.seat, v.phase, v.turn, v.hands[v.seat], v.trick, v.tricks.length, v.resv, v.annBy, legal]);
 function wantCoach(v, legal) {
   const key = coachKey(v, legal);
   if (coachShown.key === key) return coachShown.d;
@@ -113,29 +113,53 @@ function wantCoach(v, legal) {
 }
 function gotCoach(d) { if (d.id === coachAsked.id) { coachShown = { key: coachAsked.key, d: d.coach }; if (coachOn) refresh(); } }
 // labels as in chess reviews; thresholds in expected points per game (the coach's costs were checked against real play-outs)
-const COACH_LEVELS = [[0.05, 'best', '★', 'Beste Karte'], [0.25, 'good', '✓', 'Gut'], [1, 'inacc', '?!', 'Ungenau'], [2.5, 'mistake', '?', 'Fehler'], [1e9, 'blunder', '??', 'Grober Fehler']];
+const COACH_LEVELS = [[0.05, 'best', '★', 'Beste Wahl'], [0.25, 'good', '✓', 'Gut'], [1, 'inacc', '?!', 'Ungenau'], [2.5, 'mistake', '?', 'Fehler'], [1e9, 'blunder', '??', 'Grober Fehler']];
 const coachLevel = c => COACH_LEVELS.find(([t]) => c < t);
-const ratedCards = legal => legal.map((x, i) => i).filter(i => legal[i] < E.ACT_ANN);   // the coach rates card play only (so far)
+const ratedCards = legal => legal.map((x, i) => i).filter(i => legal[i] < E.ACT_ANN);
 function cardCosts(legal, vals) {   // card type → cost vs the coach's best card
   const cards = ratedCards(legal), b = cards.reduce((m, i) => vals[i] > vals[m] ? i : m, cards[0]), out = {};
   for (const i of cards) out[legal[i] >> 1] = Math.max(0, vals[b] - vals[i]);
+  return { costs: out, best: legal[b] };
+}
+// Announcements: announcing now vs not (not = the best card on my turn, or "pass" when asked out of turn); keyed by
+// action, "not announcing" under E.ACT_ANN
+function annCosts(legal, vals) {
+  let vNo = -Infinity; legal.forEach((a, i) => { if (a <= E.ACT_ANN) vNo = Math.max(vNo, vals[i]); });
+  let best = vNo, bestA = E.ACT_ANN; legal.forEach((a, i) => { if (isAnn(a) && vals[i] > best) { best = vals[i]; bestA = a; } });
+  const out = { [E.ACT_ANN]: best - vNo }; legal.forEach((a, i) => { if (isAnn(a)) out[a] = best - vals[i]; });
+  return { costs: out, best: bestA };
+}
+// Vorbehalte: cost vs the coach's best option for the whole list (c), and this game alone relative to that option (g:
+// positive = better in this game) — they differ when a solo uses up the Pflichtsolo
+function resvCosts(legal, d) {
+  const b = d.vals.reduce((m, x, i) => x > d.vals[m] ? i : m, 0), out = {};
+  legal.forEach((a, i) => { out[a] = { c: Math.max(0, d.vals[b] - d.vals[i]), g: d.game ? d.game[i] - d.game[b] : null }; });
   return { costs: out, best: legal[b] };
 }
 function costBadge(c) {
   const [, cls, sign] = coachLevel(c);
   return `<small class="cq ${cls}" title="${coachLevel(c)[3]}: kostet im Schnitt ${c.toFixed(2)} Punkte">${c < 0.05 ? '★' : '−' + c.toFixed(1)}</small>`;
 }
-// the review: replay the game record, one step per trick (my card), ask the worker for all real choices at once
-let review = null;   // { id, rec, seat, tricks, items: [{v, legal, a, forced, costs, best, cost}], at, all } or null
+const fmtG = g => `${g >= 0.05 ? '+' : g <= -0.05 ? '−' : '±'}${Math.abs(g).toFixed(1)}`;
+const gameTag = g => g === null || g === undefined ? '' : `<small class="cg" title="nur dieses Spiel, ohne den Rest der Liste">Spiel ${fmtG(g)}</small>`;
+function annBadge(costs, a) {   // ★ +gain when announcing is the coach's choice, else what it costs
+  const c = costs[a];
+  return c < 0.05 && costs[E.ACT_ANN] >= 0.05 ? `<small class="cq best" title="Beste Wahl: bringt im Schnitt ${costs[E.ACT_ANN].toFixed(2)} Punkte">★ +${costs[E.ACT_ANN].toFixed(1)}</small>` : costBadge(c);
+}
+// the review: replay the game record — my Vorbehalt, one step per trick (my card), and announcements (made, or the
+// coach would have made one) — and ask the worker for all real choices at once
+let review = null;   // { id, rec, seat, tricks, items: [{type, v, legal, a, forced, costs, best, cost}], at, all } or null
 function startReview(seat) {
   if (!G || !G.rec || mode === 'client' || !worker || G.rules.withNines) { review = null; return; }
   if (review && review.rec === G.rec && review.seat === seat) return;
   const r = G.rec, s = E.newGame({ dealer: r.dealer, rules: G.rules, hands: r.hands, duty: r.duty, forced: r.forced, listLeft: r.listLeft });
-  const items = [];
+  const items = [], item = (type, a, legal) => ({ type, v: E.view(s, seat), all: s.hands.map(h => h.slice()), legal, a, forced: false, costs: {}, cost: 0 });
   for (const x of r.actions) {
-    if (x.s === seat && s.phase === 'play' && !(s.annAsk && s.annAsk.length) && x.a < E.ACT_ANN) {
+    if (x.s === seat) {
       const legal = E.legalActions(s);
-      items.push({ v: E.view(s, seat), all: s.hands.map(h => h.slice()), legal, a: x.a, forced: ratedCards(legal).length < 2, costs: {}, cost: 0 });
+      if (s.phase === 'reserve' && legal.length > 1) items.push(item('resv', x.a, legal));
+      else if (s.phase === 'play' && legal.some(isAnn)) items.push(item('ann', isAnn(x.a) ? x.a : E.ACT_ANN, legal));   // asked out of turn, or on my turn before my card
+      if (s.phase === 'play' && x.a < E.ACT_ANN) { const it = item('card', x.a, legal); it.forced = ratedCards(legal).length < 2; items.push(it); }
     }
     E.step(s, x.a);
   }
@@ -146,7 +170,16 @@ function startReview(seat) {
 function gotReview(d) {
   if (!review || d.id !== review.id) return;
   if (!d.review) { review = null; return; }
-  review.ask.forEach((it, k) => { const c = cardCosts(it.legal, d.review[k]); it.costs = c.costs; it.best = c.best; it.cost = c.costs[it.a >> 1] || 0; });
+  review.ask.forEach((it, k) => {
+    const res = d.review[k];
+    const c = it.type === 'card' ? cardCosts(it.legal, res.vals) : it.type === 'ann' ? annCosts(it.legal, res.vals) : resvCosts(it.legal, res);
+    it.costs = c.costs; it.best = c.best;
+    it.cost = it.type === 'card' ? c.costs[it.a >> 1] || 0 : it.type === 'ann' ? c.costs[it.a] : c.costs[it.a].c;
+  });
+  // announcements: only those I made, and the first moment each one the coach would have made was missed
+  const missed = new Set();
+  const keep = it => it.type !== 'ann' || isAnn(it.a) || it.cost >= 0.25 && !missed.has(it.best) && missed.add(it.best);
+  review.items = review.items.filter(keep); review.ask = review.ask.filter(it => review.items.includes(it));
   review.ready = true;
   if (review.open) showReview(); else refresh();
 }
@@ -350,8 +383,16 @@ function render(v, meta) {
   const myTurn = v.phase !== 'done' && v.turn === me && !meta.pause && coverFor < 0 && meta.seats[me] !== 'remote' && !isBot(meta.seats[me]) || (mode === 'client' && v.phase !== 'done' && v.turn === me && !meta.pause);
   const legal = myTurn ? E.legalActions(v) : [];
   const qv = showQ && legal.length > 1 ? wantQ(v, legal) : null, qBest = qv ? Math.max(...qv) : 0;
-  const cd = coachOn && mode !== 'client' && v.phase === 'play' && ratedCards(legal).length > 1 ? wantCoach(v, legal) : null;
-  const cc = cd ? cardCosts(legal, cd.vals).costs : null;
+  // coach: my cards and announcements on my turn, my Vorbehalt, or an announcement I could make out of turn
+  const annNow = !myTurn && coachOn && mode !== 'client' && meta.seats[me] === 'human' && coverFor < 0 ? annOption(v, me) : undefined;
+  const vAsk = annNow ? Object.assign({}, v, { turn: me, annAsk: [me] }) : null, legalAsk = vAsk ? E.legalActions(vAsk) : null;
+  const coachable = myTurn && legal.length > 1 && (v.phase === 'reserve' || v.phase === 'play');
+  const cd = coachOn && mode !== 'client' ? coachable ? wantCoach(v, legal) : vAsk ? wantCoach(vAsk, legalAsk) : null : null;
+  const cc = cd && myTurn && v.phase === 'play' && ratedCards(legal).length > 1 ? cardCosts(legal, cd.vals).costs : null;
+  const ca = cd && v.phase === 'play' ? myTurn ? legal.some(isAnn) && annCosts(legal, cd.vals).costs : annCosts(legalAsk, cd.vals).costs : null;
+  const cr = cd && myTurn && v.phase === 'reserve' ? resvCosts(legal, cd) : null;
+  const coachOf = a => ca && ca[a] !== undefined ? annBadge(ca, a) : cr ? costBadge(cr.costs[a].c) + gameTag(cr.costs[a].g) : '';
+  const coachTxt = a => cr ? ` · ${cr.costs[a].c < 0.05 ? '★' : '−' + cr.costs[a].c.toFixed(1)}${cr.costs[a].g === null ? '' : ` (dieses Spiel ${fmtG(cr.costs[a].g)})`}` : '';
   const qOf = a => { const i = legal.indexOf(a); return qv && i >= 0 ? qBadge(qv[i], qv[i] === qBest) : ''; };
   const qTxt = a => { const i = legal.indexOf(a); return qv && i >= 0 ? ` (${qFmt(qv[i])})` : ''; };
   const qCard = {}; if (qv) legal.forEach((a, i) => { if (a < 100) qCard[a >> 1] = qBadge(qv[i], qv[i] === qBest); });
@@ -365,16 +406,18 @@ function render(v, meta) {
     : `<b>Du bist dran</b>${v.trick.length ? '' : ' <small>– spiel aus</small>'}`;
   else status = `${esc(meta.names[v.turn])} ${isBot(meta.seats[v.turn]) ? 'überlegt…' : 'ist dran'}`;
   if (qv) { const b = qv.indexOf(qBest); status += ` <small class="qhint">KI würde: ${E.actionName(legal[b], v)} ${qBadge(qBest, true)}</small>`; }
+  if (cr) status += ` <small class="qhint">Coach: ${E.actionName(cr.best, v)} <span class="cq best">★</span></small>`;
   let acts = '';
   if (myTurn && v.phase === 'reserve') {
-    for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
+    for (const a of legal.filter(a => !E.isSoloResv(E.RESV[a - E.ACT_RES]))) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
     const soli = legal.filter(a => E.isSoloResv(E.RESV[a - E.ACT_RES]));
-    if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}</option>`).join('')}</select>`;
+    if (soli.length) acts += `<select id="solo-sel"><option value="">Solo…</option>${soli.map(a => `<option value="${a}">${E.actionName(a, v)}${qTxt(a)}${coachTxt(a)}</option>`).join('')}</select>`;
+    if (cr && cr.costs[legal[0]].g !== null) acts += `<small class="hint cg-hint">Coach: Punkte für die ganze Liste (ein Solo jetzt erfüllt das Pflichtsolo) · „Spiel“: nur dieses Spiel</small>`;
   } else if (myTurn && v.phase === 'povAsk') for (const a of legal) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
-  else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}</button>`;
+  else if (myTurn && v.phase === 'play') for (const a of legal.filter(a => a >= E.ACT_ANN)) acts += `<button class="btn" data-a="${a}">${E.actionName(a, v)}${qOf(a)}${coachOf(a)}</button>`;
   else if (v.phase === 'play' && coverFor < 0 && (mode === 'client' || meta.seats[me] === 'human')) {   // not my turn: queue it
     const a = annOption(v, me), on = a && meta.armed === a;
-    if (a) acts += `<button class="btn${on ? ' armed' : ''}" data-a="${a}" title="${on ? 'angemeldet – nochmal tippen zum Zurücknehmen' : 'wird vor der nächsten Karte angesagt'}">${E.actionName(a, Object.assign({}, v, { turn: me }))}${on ? ' ✓' : ''}</button>`;
+    if (a) acts += `<button class="btn${on ? ' armed' : ''}" data-a="${a}" title="${on ? 'angemeldet – nochmal tippen zum Zurücknehmen' : 'wird vor der nächsten Karte angesagt'}">${E.actionName(a, Object.assign({}, v, { turn: me }))}${on ? ' ✓' : ''}${coachOf(a)}</button>`;
     if (on) status += ` <small>– ${E.actionName(a, Object.assign({}, v, { turn: me }))} kommt vor der nächsten Karte</small>`;
   }
   $('status').innerHTML = status;
@@ -432,30 +475,47 @@ function showResult(v, meta) {  // stays open until the next game starts
   if ($('r-rev')) $('r-rev').onclick = () => { review.open = true; userDialog = true; showReview(); };
   if (meta.host) $('r-next').onclick = () => { closeDialog(); nextGame(); };
 }
-function coachHTML() {   // the coach's verdict on my cards of this game
+function coachHTML() {   // the coach's verdict on my decisions of this game
   if (!review || !review.ask.length) return '';
-  return `<h3>Coach</h3><p class="hint">${review.ready ? reviewSummary() : 'Der Coach bewertet deine Karten…'}</p>`;
+  return `<h3>Coach</h3><p class="hint">${review.ready ? reviewSummary() : 'Der Coach bewertet deine Entscheidungen…'}</p>`;
 }
 const FORCED = [0, 'none', '·', 'keine Wahl'];
-function showReview() {   // chess.com-style: step through every trick (my card), every playable card with its cost
-  const R = review, it = R.items[R.at], meta = metaFor(R.seat), nm = q => esc(meta.names[q]), v = it.v, gt = v.gameType;
+function showReview() {   // chess.com-style: step through my Vorbehalt, every trick (my card) and my announcements
+  const R = review, it = R.items[R.at], meta = metaFor(R.seat), nm = q => esc(meta.names[q]), v = it.v, gt = it.type === 'resv' ? 'normal' : v.gameType;
   const lvl = x => x.forced ? FORCED : coachLevel(x.cost);
+  const chipTxt = x => x.type === 'resv' ? 'V' : x.type === 'ann' ? 'A' : x.v.tricks.length + 1;
+  const what = x => x.type === 'resv' ? 'Vorbehalt' : x.type === 'ann' ? `Ansage (Stich ${x.v.tricks.length + 1})` : `Stich ${x.v.tricks.length + 1}`;
   const strip = R.items.map((x, k) => { const [, cls, sign, word] = lvl(x);
-    return `<button class="rv-chip cq ${cls}${k === R.at ? ' on' : ''}" data-k="${k}" title="Stich ${x.v.tricks.length + 1}: ${word}">${x.v.tricks.length + 1}<b>${sign}</b></button>`; }).join('');
+    return `<button class="rv-chip cq ${cls}${k === R.at ? ' on' : ''}" data-k="${k}" title="${what(x)}: ${word}">${chipTxt(x)}<b>${sign}</b></button>`; }).join('');
   const [, cls, sign, word] = lvl(it);
-  const table = v.trick.length ? v.trick.map((id, j) => `<div class="rv-c">${cardHTML(id, gt)}<span>${nm((v.leader + j) % 4)}</span></div>`).join('') : '<span class="hint">Du spielst aus.</span>';
-  const hand = E.sortHand(v.hands[R.seat], gt).map(id => { const c = it.costs[id >> 1];
-    return cardHTML(id, gt, (c === undefined && id !== it.a ? 'off' : 'legal') + (id === it.a ? ' played' : ''), c === undefined ? '' : costBadge(c)); }).join('');
+  const table = it.type === 'resv' ? '' : v.trick.length ? v.trick.map((id, j) => `<div class="rv-c">${cardHTML(id, gt)}<span>${nm((v.leader + j) % 4)}</span></div>`).join('') : '<span class="hint">Du spielst aus.</span>';
+  const hand = E.sortHand(v.hands[R.seat], gt).map(id => { const c = it.type === 'card' ? it.costs[id >> 1] : undefined;
+    return cardHTML(id, gt, it.type !== 'card' ? 'legal' : (c === undefined && id !== it.a ? 'off' : 'legal') + (id === it.a ? ' played' : ''), c === undefined ? '' : costBadge(c)); }).join('');
+  // Vorbehalt and announcements: the options as a list (Vorbehalt: the 6 best and mine)
+  let opts = '';
+  if (it.type === 'resv') {
+    const order = Object.keys(it.costs).map(Number).sort((a, b) => it.costs[a].c - it.costs[b].c);
+    opts = order.filter((a, k) => k < 6 || a === it.a).map(a => `<div class="rv-opt${a === it.a ? ' mine' : ''}">${costBadge(it.costs[a].c)}${gameTag(it.costs[a].g)} ${esc(E.actionName(a, v))}${a === it.a ? ' <small>(du)</small>' : ''}</div>`).join('');
+  } else if (it.type === 'ann') {
+    opts = Object.keys(it.costs).map(Number).sort((a, b) => it.costs[a] - it.costs[b]).map(a => `<div class="rv-opt${a === it.a ? ' mine' : ''}">${costBadge(it.costs[a])} ${a === E.ACT_ANN ? 'Keine Ansage' : esc(E.actionName(a, v))}${a === it.a ? ' <small>(du)</small>' : ''}</div>`).join('');
+  }
+  const name = a => it.type === 'ann' && a === E.ACT_ANN ? 'keine Ansage' : E.actionName(a, v);
+  const info = it.type === 'resv' ? [v.forced === R.seat ? 'Vorführung: du musst jetzt dein Pflichtsolo spielen' : v.duty && v.duty[R.seat] ? 'dein Pflichtsolo ist noch offen' : '',
+    v.listLeft > 0 ? `noch ${v.listLeft} Spiele in der Liste` : ''].filter(Boolean).join(' · ') : '';
   const others = R.all ? [1, 2, 3].map(r => (R.seat + r) % 4).map(q => `<div class="rv-row"><span class="rv-nm">${nm(q)}</span>${E.sortHand(it.all[q], gt).map(id => cardHTML(id, gt)).join('')}</div>`).join('') : '';
-  const done = R.tricks[v.tricks.length];   // how this trick ended
+  const done = it.type === 'card' ? R.tricks[v.tricks.length] : null;   // how this trick ended
+  const foot = it.type === 'card' ? 'Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.'
+    : it.type === 'ann' ? 'Ansagen: was die Ansage jetzt im Schnitt bringt oder kostet (Punkte aus deiner Sicht, ohne Kartenglück). Gezeigt werden deine Ansagen und der erste Moment, in dem der Coach selbst angesagt hätte.'
+    : 'Vorbehalt: Punkte für den Rest der Liste – ein Solo jetzt erfüllt dein Pflichtsolo, sonst musst du es später spielen. „Spiel“ = nur dieses Spiel, im Vergleich zur besten Wahl (★).';
   openDialog(`<h2>Analyse</h2><p class="hint">${reviewSummary()}</p><div class="rv-strip">${strip}</div>
-    <h3>Stich ${v.tricks.length + 1} · ${gameLabel(v, meta)}</h3>
-    <div class="rv-row rv-table">${table}</div>
-    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(E.actionName(it.a, v))}</b> – ${it.forced ? 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(E.actionName(it.best, v))}</b>` : ''}</p>
+    <h3>${what(it)} · ${it.type === 'resv' ? 'Vorbehalte' : gameLabel(v, meta)}</h3>${info ? `<p class="hint">${info}</p>` : ''}
+    ${table ? `<div class="rv-row rv-table">${table}</div>` : ''}
+    <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ca. ${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}</p>
+    ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
     ${done ? `<p class="hint">Der Stich: ${done.cards.map((id, j) => `${esc(E.cardName(id))} <small>${nm((done.leader + j) % 4)}</small>`).join(' · ')} → <b>${nm(done.winner)}</b> (${done.points} Augen)</p>` : ''}
     <div class="rv-row rv-hand">${hand}</div>
     <label class="hint rv-all"><input type="checkbox" id="rv-all"${R.all ? ' checked' : ''}> Karten der anderen zeigen (die Bewertung kennt sie nicht)</label>${others}
-    <p class="hint">Zahl auf der Karte = wie viele Punkte sie im Schnitt gegenüber der besten (★) kostet – aus deiner Sicht, ohne Kartenglück, wenn danach gut weitergespielt wird.</p>
+    <p class="hint">${foot}</p>
     <div class="row" style="justify-content:space-between"><span><button class="btn" id="rv-prev"${R.at ? '' : ' disabled'}>←</button> <button class="btn" id="rv-next"${R.at < R.items.length - 1 ? '' : ' disabled'}>→</button></span>
     <button class="btn primary" id="rv-close">Zurück</button></div>`);
   const go = k => { R.at = Math.max(0, Math.min(R.items.length - 1, k)); showReview(); };
