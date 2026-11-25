@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=28');
+  worker = new Worker('worker.js?v=29');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data || 'preds' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data), 'preds' in e.data && gotSignals(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -195,13 +195,17 @@ function predOf(p0, f, seat, gt) {   // only facts say 0 % or 100 %; a head's es
   const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : t === CQ && q in joint ? (mine === 0 ? 1 - joint[q] : joint[q]) : p[6 + (rel(q) - 1) * 24 + t];
   const trump = q => f.void[q].includes(4) ? 0 : f.trumps.some(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q) ? 1 : p[3 + rel(q) - 1];
   const who = t => { const w = [0, 1, 2, 3].map(q => p0[107 + 4 * t + rel(q)]), sum = w.reduce((a, b) => a + b, 0) || 1; return w.map(x => x / sum); };   // by seat
-  return { team, trump, card, trick: t => p[78 + t], game: p[102], augen: p.slice(103, 107), who };
+  // a decided game (facts.rs: all parties public, no announcement possible any more) and Augen thresholds already reached
+  // or out of reach are facts, not estimates
+  const game = f.decided != null ? f.decided : p[102];
+  const augen = [90, 151, 181, 211].map((x, i) => !f.myAugen ? p[103 + i] : f.myAugen[0] >= x ? 1 : f.myAugen[1] < x ? 0 : p[103 + i]);
+  return { team, trump, card, trick: t => p[78 + t], game, augen, who };
 }
 function predHTML(p, f, seat, names, gt) {
   const P = predOf(p, f, seat, gt), nm = q => esc(names[q]), others = [1, 2, 3].map(r => (seat + r) % 4), L = [];
   const open = others.filter(q => f.team[q] === null), ts = open.map(q => P.team(q)), avg = ts.reduce((a, b) => a + b, 0) / (open.length || 1);
   const flat = open.length > 1 && ts.every(t => Math.abs(t - avg) < 0.1);   // all within 10 points of each other's mean: no real hint yet
-  if (open.length) L.push(`<b>Mit dir in einer Partei:</b> ${flat ? 'noch keine klare Tendenz <small>(' : ''}${open.map(q => `${nm(q)} ${pct(P.team(q))}`).join(' · ')}${flat ? ')</small>' : ''}`);
+  if (open.length) L.push(`<b>Mit dir in einer Partei:</b> ${flat ? `noch keine klare Tendenz (je etwa ${pct(avg)})` : open.map(q => `${nm(q)} ${pct(P.team(q))}`).join(' · ')}`);
   if (f.trumps.length && f.trumps.some(t => f.unseen[t] > 0)) L.push(`<b>Hat noch Trumpf:</b> ${others.map(q => `${nm(q)} ${pct(P.trump(q))}`).join(' · ')}`);
   for (const t of f.trumps.filter(t => f.unseen[t] > 0).slice(0, 2))
     L.push(`<b>${E.cardName(t * 2)}${f.unseen[t] > 1 ? ' (2×)' : ''} bei:</b> ${others.map(q => `${nm(q)} ${pct(P.card(q, t))}`).join(' · ')}`);
