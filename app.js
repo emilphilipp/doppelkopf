@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=29');
+  worker = new Worker('worker.js?v=30');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data || 'preds' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data), 'preds' in e.data && gotSignals(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -192,7 +192,11 @@ function predOf(p0, f, seat, gt) {   // only facts say 0 % or 100 %; a head's es
     open.forEach((q, i) => { joint[q] = clip(raw[i] / sum); });
   }
   const team = q => q in joint ? joint[q] : p[rel(q) - 1];
-  const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : t === CQ && q in joint ? (mine === 0 ? 1 - joint[q] : joint[q]) : p[6 + (rel(q) - 1) * 24 + t];
+  // a card's possible holders: "holds one" adds up to 1 with one copy out, to 1–2 with two (held-out games: 35 % of
+  // one-copy cases were off by > 5 points; rescaled is slightly more accurate)
+  const raw = (q, t) => p0[6 + (rel(q) - 1) * 24 + t];
+  const scale = t => { const s = f.holders[t].reduce((a, q) => a + raw(q, t), 0), u = f.unseen[t]; return s > 0 ? Math.min(Math.max(s, 1), u) / s : 1; };
+  const card = (q, t) => !f.holders[t].includes(q) ? 0 : f.holders[t].length === 1 ? 1 : t === CQ && q in joint ? (mine === 0 ? 1 - joint[q] : joint[q]) : clip(raw(q, t) * scale(t));
   const trump = q => f.void[q].includes(4) ? 0 : f.trumps.some(t => f.unseen[t] > 0 && f.holders[t].length === 1 && f.holders[t][0] === q) ? 1 : p[3 + rel(q) - 1];
   const who = t => { const w = [0, 1, 2, 3].map(q => p0[107 + 4 * t + rel(q)]), sum = w.reduce((a, b) => a + b, 0) || 1; return w.map(x => x / sum); };   // by seat
   // a decided game (facts.rs: all parties public, no announcement possible any more) and Augen thresholds already reached
