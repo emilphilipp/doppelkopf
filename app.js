@@ -64,7 +64,7 @@ let peer = null, roomCode = '', remote = [null, null, null, null];
 // ---- bots (web worker, main-thread fallback) ------------------------------------------------------
 let worker = null, botWaiting = null, botReq = 0, botTimer = 0;
 try {
-  worker = new Worker('worker.js?v=33');
+  worker = new Worker('worker.js?v=34');
   worker.onmessage = e => ('coach' in e.data || 'q' in e.data || 'review' in e.data || 'preds' in e.data ? ('coach' in e.data && gotCoach(e.data), 'q' in e.data && gotQ(e.data), 'review' in e.data && gotReview(e.data), 'preds' in e.data && gotSignals(e.data)) : e.data.err ? workerBroken(e.data.err) : botWaiting && botWaiting(e.data));
   worker.onerror = e => { if (e.preventDefault) e.preventDefault(); workerBroken(e.message || 'worker error'); };
 } catch (e) { worker = null; }
@@ -258,6 +258,17 @@ function whyHTML(it, v, f, p, seat, names) {
   const winsNow = v.trick.length < 3 && (!v.trick.length || E.trickWinnerIdx(v, [...v.trick, it.a], v.tricks.length === 9) === v.trick.length);   // could still be overtaken
   if (higher.length && winsNow && (!P || P.trick(a) < 0.5)) L.push(`Höher als ${E.cardName(it.a)} ist noch draußen: ${higher.slice(0, 3).map(t => E.cardName(t * 2) + where(t)).join(', ')}.`);
   return L.length ? `<p class="hint rv-why"><b>Warum?</b> ${L.join(' ')}</p>` : '';
+}
+// rules of thumb (rules.js, measured against the bot in docs/rules-check.md): shown when my move broke a rule, cost
+// points, and in this position a move that follows the rule is clearly better (coach values)
+function ruleHTML(it, v) {
+  if (it.forced || it.cost < 0.25 || typeof DokoRules === 'undefined' || (it.type !== 'card' && it.type !== 'ann')) return '';
+  const card = it.type === 'card', cost = a => card ? it.costs[a >> 1] : it.costs[a], mine = a => card ? a >> 1 === it.a >> 1 : a === it.a;
+  const hits = DokoRules.check(v, it.legal).filter(r => r.B.some(mine) && (card ? Math.min(...r.G.map(cost)) : cost(E.ACT_ANN)) <= it.cost - 0.2);
+  return hits.sort((x, y) => DokoRules.INFO[y.id].d[0] - DokoRules.INFO[x.id].d[0]).slice(0, 2).map(r => { const I = DokoRules.INFO[r.id];
+    const d = [...new Set(I.d.filter(x => x !== null).map(x => (x >= 0 ? '+' : '') + x.toFixed(1)))].join(' bis ');
+    return `<p class="hint rv-why"><b>Faustregel</b> <small>(${esc(I.src)})</small>: „${esc(I.text)}“${r.est !== null ? ` Deine Hand nach der Checkliste der Dokoschule: ca. ${r.est} Augen.` : ''}
+      <small>Unser Test mit dem Bot: er hält sich in ${I.bot} % der Fälle daran; die Regel bringt dort im Schnitt ${d} P.${I.note ? ` (${esc(I.note)})` : ''}</small></p>`; }).join('');
 }
 // the review: replay the game record — my Vorbehalt, one step per trick (my card), and announcements (made, or the
 // coach would have made one) — and ask the worker for all real choices at once
@@ -689,6 +700,7 @@ function showReview() {   // chess.com-style: step through my Vorbehalt, every t
     <p class="rv-verdict"><span class="cq ${cls}">${sign}</span> Du: <b>${esc(name(it.a))}</b> – ${it.forced ? it.type === 'pov' ? 'keine Wahl (alle Trümpfe müssen abgegeben werden)' : 'keine Wahl (einzige spielbare Karte)' : word}${!it.forced && it.cost >= 0.05 ? `, kostet ${it.exact ? '' : 'ca. '}${it.cost.toFixed(1)} P. Besser: <b>${esc(name(it.best))}</b>` : ''}${it.exact && !it.forced ? ' <small class="hint">(exakt)</small>' : ''}</p>
     ${opts ? `<div class="rv-opts">${opts}</div>` : ''}
     ${it.type === 'card' && v.facts ? whyHTML(it, v, v.facts, it.pred, R.seat, meta.names) : ''}
+    ${v.facts ? ruleHTML(it, v) : ''}
     ${it.type === 'card' ? signalHTML(it, R.seat, meta.names, R.team) : ''}
     ${it.type === 'ann' && it.pred ? `<p class="hint">${annChanceHTML(it.pred, it.legal)}</p>` : ''}
     ${it.type === 'card' && it.pred && !it.forced ? `<p class="hint">Stich für deine Partei: ${[...new Set(ratedCards(it.legal).map(i => it.legal[i] >> 1))].sort((x, y) => it.pred[78 + y] - it.pred[78 + x]).map(t => `${E.cardName(t * 2)} ${pct(it.pred[78 + t])}`).join(' · ')}</p>` : ''}
